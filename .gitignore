@@ -1,0 +1,5 @@
+# IntelliJ config
+.idea/
+
+# Build artifact
+kubectl-actuator-plugin

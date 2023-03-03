@@ -1,22 +1,37 @@
-# kubectl-actuator-plugin
+# kubectl-actuator
 
-## Purpose
+This kubectl plugin allows you to interact with Spring Boot Actuator endpoints in your Kubernetes cluster. Currently it
+provides two main functionalities: listing loggers and setting logger levels.
 
-This kubectl cli plugin enables you to interact with the Spring Boot Actuator component.
+## Installation
 
-## Functionality
+To install `kubectl-actuator`, you can download the latest release from
+the [GitHub releases page](https://github.com/deviceinsight/kubectl-actuator/releases). Extract the downloaded archive
+and move the `kubectl-actuator` binary to a directory in your PATH.
 
-Retrieving the logger configuration if an application:
+For [shell completion](https://github.com/kubernetes/kubernetes/pull/105867) to work, you need to have at least kubectl
+version 1.26 installed. Also, `kubectl_complete-actuator` needs to be symlinked to `kubectl-actuator`. For example:
+
+```bash
+ln -sr ~/.local/bin/kubectl-actuator ~/.local/bin/kubectl_complete-actuator
 ```
-❯ kubectl actuator logger get --pod ms-aks-dev-ms-asset-manager-66d5ff5f66-czp7w
+
+## Usage
+
+The plugin provides two subcommands: `pod` and `deployment`. You can use the `pod` subcommand to execute Actuator
+commands for a specific pod, and the `deployment` subcommand to execute Actuator commands for a deployment.
+
+### List loggers
+
+```
+❯ kubectl actuator pod <pod-name> logger
 LOGGER                                               LEVEL
 ROOT                                                 INFO
-com.azure.core.amqp                                  WARN
-com.azure.messaging.eventhubs                        WARN
-com.deviceinsight.ms                                 INFO
+com.example.app                                      INFO
 org.apache.catalina.startup.DigesterFactory          ERROR
 org.apache.catalina.util.LifecycleBase               ERROR
 org.apache.coyote.http11.Http11NioProtocol           WARN
+org.apache.kafka                                     WARN
 org.apache.sshd.common.util.SecurityUtils            WARN
 org.apache.tomcat.util.net.NioSelectorPool           WARN
 org.eclipse.jetty.util.component.AbstractLifeCycle   ERROR
@@ -24,27 +39,16 @@ org.hibernate.validator.internal.util.Version        WARN
 org.springframework.boot.actuate.endpoint.jmx        WARN
 ```
 
-Setting the level of a logger:
-```
-❯ kubectl actuator logger set --pod ms-aks-dev-ms-asset-manager-66d5ff5f66-czp7w com.deviceinsight.ms INFO
-```
-
-## Installation
-Right now there is no binary build available, so you have to build the plugin yourself:
+### Set logger level
 
 ```
-❯ git clone git@gitlab.device-insight.com:mwa/kubectl-actuator-plugin.git
-❯ cd kubectl-actuator-plugin/
-❯ go build
-❯ cp -p kubectl-actuator-plugin ~/.local/bin/kubectl-actuator
-❯ kubectl actuator --help
+❯ actuator pod <pod-name> logger com.example.app INFO
 ```
 
-## TODO
-* Code cleanup
-* Investigate why command line completion is not working
-  * Provide autocomplete support for logger and log levels
-* Validate log level options
-* Support deployments and statefulsets
-* Make Actuator port and URL configurable via pod labels
-* Support other actuator components
+### Configuration
+
+When using the default Spring Boot configuration this plugin should with without additional configuration. However, if
+actuator runs on a non-standard port or path, you can configure this via labels on the pod.
+
+* `kubectl-actuator.device-insight.com/basePath`: Actuator base path. Defaults to `actuator`
+* `kubectl-actuator.device-insight.com/port`: Actuator port. Defaults to `9090`

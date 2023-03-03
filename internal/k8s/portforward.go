@@ -1,41 +1,28 @@
-package util
+package k8s
 
 import (
 	"context"
 	"fmt"
 	"github.com/pkg/errors"
-	"io/ioutil"
+	"io"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/util/httpstream"
-	"k8s.io/client-go/rest"
 	"k8s.io/client-go/transport/spdy"
 	"net"
 	"net/http"
+	"strconv"
 	"time"
 )
 
-func CreateHttpTransport(
-	pod *corev1.Pod,
-	restClient *rest.RESTClient,
-	restConfig *rest.Config,
-) (*http.Transport, error) {
-	// TODO:
-	// - Clean up this code
-	// - Make port configurable via label
-	// - Mak actuator base url configurable via label
-
-	if pod.Status.Phase != corev1.PodRunning {
-		return nil, fmt.Errorf("pod is not running. Current status=%v", pod.Status.Phase)
-	}
-
-	portforwardUrl := restClient.Post().
+func (c Connection) CreateHttpTransport(podName string, podPort int) (*http.Transport, error) {
+	portforwardUrl := c.RestClient.Post().
 		Resource("pods").
-		Namespace(pod.Namespace).
-		Name(pod.Name).
+		Namespace(c.Namespace).
+		Name(podName).
 		SubResource("portforward").
 		URL()
 
-	transport, upgrader, err := spdy.RoundTripperFor(restConfig)
+	transport, upgrader, err := spdy.RoundTripperFor(c.RestConfig)
 	if err != nil {
 		return nil, err
 	}
@@ -48,8 +35,8 @@ func CreateHttpTransport(
 
 	headers := http.Header{}
 	headers.Set(corev1.StreamType, corev1.StreamTypeError)
-	headers.Set(corev1.PortHeader, "9090")              // TODO
-	headers.Set(corev1.PortForwardRequestIDHeader, "1") // TODO
+	headers.Set(corev1.PortHeader, strconv.Itoa(podPort))
+	headers.Set(corev1.PortForwardRequestIDHeader, "1") // XXX: Should this always be 1?
 
 	errorStream, err := connection.CreateStream(headers)
 	if err != nil {
@@ -60,8 +47,9 @@ func CreateHttpTransport(
 		return nil, errors.Wrap(err, "Unable to close error stream")
 	}
 
+	// XXX: The errors shouldn't be just printed to stdout
 	go func() {
-		message, err := ioutil.ReadAll(errorStream)
+		message, err := io.ReadAll(errorStream)
 		switch {
 		case err != nil:
 			fmt.Println("Error reading error")

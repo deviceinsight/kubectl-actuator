@@ -1,13 +1,19 @@
 package acuator
 
-import "errors"
+import (
+	"errors"
+	"fmt"
+)
 
 func (c ActuatorClient) GetLoggers() ([]LoggerConfiguration, error) {
 	response, err := c.resty.R().
 		SetResult(loggersResponse{}).
-		Get("/loggers/")
+		Get("/loggers")
 	if err != nil {
 		return nil, err
+	}
+	if response.IsError() {
+		return nil, fmt.Errorf("unable to get loggers: %s", response.Status())
 	}
 
 	actuatorResponse := response.Result().(*loggersResponse)
@@ -24,13 +30,13 @@ func (c ActuatorClient) GetLoggers() ([]LoggerConfiguration, error) {
 	return loggers, nil
 }
 
-func (c ActuatorClient) SetLoggerLevel(logger string, level *string) error {
+func (c ActuatorClient) SetLoggerLevel(logger string, level string) error {
 	response, err := c.resty.R().
 		SetPathParams(map[string]string{
 			"logger": logger,
 		}).
 		SetBody(setLoggerLevelRequest{
-			ConfiguredLevel: level,
+			ConfiguredLevel: &level,
 		}).
 		Post("/loggers/{logger}")
 	if err != nil {

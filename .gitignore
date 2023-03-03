@@ -3,3 +3,5 @@
 
 # Build artifact
 kubectl-actuator-plugin
+
+dist/

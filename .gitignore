@@ -2,6 +2,6 @@
 .idea/
 
 # Build artifact
-kubectl-actuator-plugin
+kubectl-actuator
 
 dist/

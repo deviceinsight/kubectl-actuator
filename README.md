@@ -1,54 +1,191 @@
 # kubectl-actuator
 
-This kubectl plugin allows you to interact with Spring Boot Actuator endpoints in your Kubernetes cluster. Currently it
-provides two main functionalities: listing loggers and setting logger levels.
+A kubectl plugin for interacting with Spring Boot Actuator endpoints.
+
+## Features
+
+- **Logger Management**: List all loggers and dynamically change log levels at runtime
+- **Scheduled Tasks Monitoring**: View scheduled tasks with execution status, timing, and schedules
+- **Application Info**: View application build and runtime information
 
 ## Installation
 
-To install `kubectl-actuator`, you can download the latest release from
-the [GitHub releases page](https://github.com/deviceinsight/kubectl-actuator/releases). Extract the downloaded archive
-and move the `kubectl-actuator` binary to a directory in your PATH.
-
-For [shell completion](https://github.com/kubernetes/kubernetes/pull/105867) to work, you need to have at least kubectl
-version 1.26 installed. Also, `kubectl_complete-actuator` needs to be symlinked to `kubectl-actuator`. For example:
+Download the latest release from the [GitHub releases page](https://github.com/deviceinsight/kubectl-actuator/releases):
 
 ```bash
+# Extract and install
+tar -xzf kubectl-actuator_*.tar.gz
+mv kubectl-actuator ~/.local/bin/
+
+# Enable shell completion
 ln -sr ~/.local/bin/kubectl-actuator ~/.local/bin/kubectl_complete-actuator
 ```
 
+## Configuration
+
+### Pod Annotations
+
+By default, the plugin expects Spring Boot Actuator on `http://localhost:8080/actuator`. Customize via pod annotations:
+
+- `kubectl-actuator.device-insight.com/port`: Actuator port (default: `8080`)
+- `kubectl-actuator.device-insight.com/basePath`: Actuator base path (default: `actuator`)
+
 ## Usage
 
-The plugin provides two subcommands: `pod` and `deployment`. You can use the `pod` subcommand to execute Actuator
-commands for a specific pod, and the `deployment` subcommand to execute Actuator commands for a deployment.
+### Global Flags
 
-### List loggers
+All commands support target selection:
 
-```
-❯ kubectl actuator pod <pod-name> logger
+- `--pod <pod-name>` or `-p`: Target one or more specific pods
+- `--deployment <deployment-name>` or `-d`: Target all pods in a deployment
+- `--selector <label-selector>` or `-l`: Target pods by label selector (e.g., `app=myapp,env=prod`)
+
+Standard kubectl flags such as `--namespace` or `--context` are also supported.
+
+### Logger Commands
+
+#### List all loggers
+
+View current logger configuration:
+
+```bash
+❯ kubectl actuator --pod my-app-pod logger
 LOGGER                                               LEVEL
 ROOT                                                 INFO
 com.example.app                                      INFO
+com.example.app.service                              DEBUG
 org.apache.catalina.startup.DigesterFactory          ERROR
 org.apache.catalina.util.LifecycleBase               ERROR
-org.apache.coyote.http11.Http11NioProtocol           WARN
-org.apache.kafka                                     WARN
-org.apache.sshd.common.util.SecurityUtils            WARN
-org.apache.tomcat.util.net.NioSelectorPool           WARN
-org.eclipse.jetty.util.component.AbstractLifeCycle   ERROR
-org.hibernate.validator.internal.util.Version        WARN
-org.springframework.boot.actuate.endpoint.jmx        WARN
+org.springframework.web                              INFO
 ```
 
-### Set logger level
+#### Set logger level
 
+Change a logger's level at runtime:
+
+```bash
+# Set a specific logger to DEBUG
+❯ kubectl actuator --pod my-app-pod logger com.example.app.service DEBUG
+
+# Set ROOT logger level
+❯ kubectl actuator --pod my-app-pod logger ROOT WARN
 ```
-❯ actuator pod <pod-name> logger com.example.app INFO
+
+**Available log levels**: TRACE, DEBUG, INFO, WARN, ERROR, FATAL, OFF
+
+### Scheduled Tasks
+
+View scheduled tasks with execution details:
+
+```bash
+❯ kubectl actuator --deployment my-app scheduled-tasks
+TYPE         TARGET                                  SCHEDULE                           NEXT            LAST         STATUS
+cron         BackupScheduler.scheduleBackups         cron(0 * * * * *)                  in 49s          11s ago      SUCCESS
+fixedDelay   CacheRefreshService.refreshCache        fixedDelay=5m                      in 4m33s        27s ago      SUCCESS
+fixedDelay   HealthCheckService.checkServiceHealth   fixedDelay=12h initialDelay=15m    in 11h59m58s    27s ago      ERROR - Connection timeout
+fixedDelay   CleanupScheduler.triggerCleanup         fixedDelay=24h                     in 23h44m33s    15m27s ago   SUCCESS
+fixedDelay   StatusWatcher.checkStatus               fixedDelay=5s                      -               2s ago       STARTED
+fixedRate    UpdateService.checkForUpdates           fixedRate=30m                      in 14m33s       15m27s ago   SUCCESS
 ```
 
-### Configuration
+### Application Info
 
-When using the default Spring Boot configuration this plugin should with without additional configuration. However, if
-actuator runs on a non-standard port or path, you can configure this via labels on the pod.
+View application build and runtime information:
 
-* `kubectl-actuator.device-insight.com/basePath`: Actuator base path. Defaults to `actuator`
-* `kubectl-actuator.device-insight.com/port`: Actuator port. Defaults to `9090`
+```bash
+❯ kubectl actuator --pod my-app-pod info
+{
+  "build": {
+    "artifact": "my-app",
+    "name": "my-app",
+    "time": "2025-10-21T22:34:55.709Z",
+    "version": "1.0.0",
+    "group": "com.example"
+  },
+  "kubernetes": {
+    "nodeName": "node-1",
+    "podIp": "10.0.0.23",
+    "hostIp": "10.0.0.10",
+    "namespace": "default",
+    "podName": "my-app-5d4c8f9b-xk7pq",
+    "serviceAccount": "my-app",
+    "inside": true
+  }
+}
+```
+
+### Multi-Target Operations
+
+#### Target multiple pods
+
+```bash
+# Target specific pods
+❯ kubectl actuator --pod app-pod-1 --pod app-pod-2 logger
+
+app-pod-1:
+LOGGER                    LEVEL
+ROOT                      INFO
+com.example.app           DEBUG
+
+app-pod-2:
+LOGGER                    LEVEL
+ROOT                      INFO
+com.example.app           DEBUG
+```
+
+#### Target deployments
+
+Automatically targets all pods from the deployment's selector:
+
+```bash
+# Target all pods in a deployment
+❯ kubectl actuator --deployment my-app logger
+
+# Target multiple deployments
+❯ kubectl actuator --deployment app-1 --deployment app-2 scheduled-tasks
+```
+
+#### Target by label selector
+
+Use standard Kubernetes label selectors to target pods:
+
+```bash
+# Target pods by single label
+❯ kubectl actuator -l app=myapp logger
+
+# Target pods by multiple labels
+❯ kubectl actuator --selector app=myapp,env=production scheduled-tasks
+
+# Combine with other target options
+❯ kubectl actuator -l tier=backend --deployment frontend-app logger
+```
+
+#### Namespace selection
+
+Use standard kubectl namespace flags:
+
+```bash
+# Specific namespace
+❯ kubectl actuator -n production --deployment my-app logger
+
+# All namespaces
+❯ kubectl actuator --all-namespaces --pod my-pod logger
+```
+
+## Building from Source
+
+```bash
+# Clone the repository
+git clone https://github.com/deviceinsight/kubectl-actuator.git
+cd kubectl-actuator
+
+# Build
+go build -o kubectl-actuator .
+
+# Install
+mv kubectl-actuator ~/.local/bin/
+```
+
+## License
+
+See [LICENSE](LICENSE) file for details.

@@ -1,19 +1,22 @@
 package cmd
 
 import (
+	"context"
+	"errors"
 	"fmt"
-	"github.com/pkg/errors"
-	"github.com/spf13/cobra"
-	"gitlab.device-insight.com/mwa/kubectl-actuator-plugin/internal/acuator"
-	"gitlab.device-insight.com/mwa/kubectl-actuator-plugin/internal/k8s"
-	"k8s.io/cli-runtime/pkg/genericclioptions"
 	"strings"
+
+	"github.com/deviceinsight/kubectl-actuator/internal/actuator"
+	"github.com/deviceinsight/kubectl-actuator/internal/k8s"
+	"github.com/spf13/cobra"
+	"k8s.io/cli-runtime/pkg/genericclioptions"
 )
 
 type loggerCommandOperations struct {
-	k8sCliFlags *genericclioptions.ConfigFlags
-	connection  *k8s.Connection
-	podResolver PodResolver
+	k8sCliFlags      *genericclioptions.ConfigFlags
+	k8sClient        k8s.Client
+	transportFactory k8s.TransportFactory
+	podResolver      PodResolver
 
 	pods           []string
 	showAllLoggers bool
@@ -42,9 +45,9 @@ func NewLoggerCommand(configFlags *genericclioptions.ConfigFlags, podResolver Po
 			}
 
 			if operations.targetLevel != "" {
-				err = operations.runSetLogger()
+				err = operations.runSetLogger(cmd.Context())
 			} else {
-				err = operations.runGetLogger()
+				err = operations.runGetLogger(cmd.Context())
 			}
 			if err != nil {
 				return err
@@ -58,7 +61,7 @@ func NewLoggerCommand(configFlags *genericclioptions.ConfigFlags, podResolver Po
 				return nil, cobra.ShellCompDirectiveNoFileComp
 			}
 			if len(args) == 0 {
-				return operations.validArgsLogger()
+				return operations.validArgsLogger(cmd.Context())
 			} else if len(args) == 1 {
 				return operations.validArgsLogLevel()
 			} else {
@@ -77,9 +80,10 @@ func (o *loggerCommandOperations) complete(cmd *cobra.Command, args []string) er
 	if err != nil {
 		return err
 	}
-	o.connection = connection
+	o.k8sClient = connection
+	o.transportFactory = connection
 
-	pods, err := o.podResolver(connection, cmd)
+	pods, err := o.podResolver(cmd.Context(), connection, cmd)
 	if err != nil {
 		return err
 	}
@@ -115,8 +119,12 @@ func (o *loggerCommandOperations) validate() error {
 	return nil
 }
 
-func (o *loggerCommandOperations) validArgsLogger() ([]string, cobra.ShellCompDirective) {
-	client, err := acuator.NewActuatorClient(o.connection, o.pods[0])
+func (o *loggerCommandOperations) validArgsLogger(ctx context.Context) ([]string, cobra.ShellCompDirective) {
+	if len(o.pods) == 0 {
+		return nil, cobra.ShellCompDirectiveNoFileComp
+	}
+
+	client, err := actuator.NewActuatorClient(ctx, o.transportFactory, o.k8sClient, o.pods[0])
 	if err != nil {
 		return nil, cobra.ShellCompDirectiveNoFileComp
 	}

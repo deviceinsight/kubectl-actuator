@@ -2,16 +2,14 @@ package cmd
 
 import (
 	"context"
+
+	"github.com/deviceinsight/kubectl-actuator/internal/k8s"
 	"github.com/spf13/cobra"
 	"github.com/spf13/pflag"
-	"gitlab.device-insight.com/mwa/kubectl-actuator-plugin/internal/k8s"
-	v1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/cli-runtime/pkg/genericclioptions"
-	"os"
-	"strings"
 )
 
-type PodResolver func(connection *k8s.Connection, cmd *cobra.Command) ([]string, error)
+type PodResolver func(ctx context.Context, k8sClient k8s.Client, cmd *cobra.Command) ([]string, error)
 
 func AddCommands(rootCmd *cobra.Command) {
 	configFlags := genericclioptions.NewConfigFlags(true)
@@ -22,112 +20,90 @@ func AddCommands(rootCmd *cobra.Command) {
 		flag.Hidden = true
 	})
 
-	addPodCmd(
-		rootCmd, configFlags,
-		"pod pod-name", "Execute actuator command for a pod", []string{"po"},
-		PodPodResolver,
-		k8s.Connection.ListPods,
-	)
+	// Global target selection
+	rootCmd.PersistentFlags().StringArrayP("pod", "p", nil, "Select target pod(s)")
+	rootCmd.PersistentFlags().StringArrayP("deployment", "d", nil, "Select target deployment(s)")
+	rootCmd.PersistentFlags().StringArrayP("selector", "l", nil, "Select target pod(s) by label selector")
 
-	addPodCmd(
-		rootCmd, configFlags,
-		"deployment deployment-name", "Execute actuator command for a deployment", []string{"deploy"},
-		DeploymentPodResolver,
-		k8s.Connection.ListDeployments,
-	)
+	// Shell completion
+	_ = rootCmd.RegisterFlagCompletionFunc("pod", func(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
+		k8sClient, err := k8s.NewK8sConnection(configFlags)
+		if err != nil {
+			return nil, cobra.ShellCompDirectiveNoFileComp
+		}
+		workloadNames, err := k8sClient.ListPods(cmd.Context(), k8sClient.Namespace(), "")
+		if err != nil {
+			return nil, cobra.ShellCompDirectiveNoFileComp
+		}
+		return workloadNames, cobra.ShellCompDirectiveNoFileComp
+	})
+
+	_ = rootCmd.RegisterFlagCompletionFunc("deployment", func(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
+		k8sClient, err := k8s.NewK8sConnection(configFlags)
+		if err != nil {
+			return nil, cobra.ShellCompDirectiveNoFileComp
+		}
+		workloadNames, err := k8sClient.ListDeployments(cmd.Context(), k8sClient.Namespace())
+		if err != nil {
+			return nil, cobra.ShellCompDirectiveNoFileComp
+		}
+		return workloadNames, cobra.ShellCompDirectiveNoFileComp
+	})
+
+	// Actuator subcommands
+	rootCmd.AddCommand(NewLoggerCommand(configFlags, FlagsPodResolver))
+	rootCmd.AddCommand(NewScheduledTasksCommand(configFlags, FlagsPodResolver))
+	rootCmd.AddCommand(NewInfoCommand(configFlags, FlagsPodResolver))
 }
 
-func addPodCmd(
-	parentCmd *cobra.Command,
-	configFlags *genericclioptions.ConfigFlags,
-	use string,
-	short string,
-	aliases []string,
-	podResolver PodResolver,
-	workloadListFunction func(k8s.Connection) ([]string, error),
-) {
-	var subCommandsCreators = []func(*genericclioptions.ConfigFlags, PodResolver) *cobra.Command{NewLoggerCommand}
-
-	var childCmd = &cobra.Command{
-		Use:     use,
-		Short:   short,
-		Aliases: aliases,
-		Args:    cobra.ExactArgs(1),
-		ValidArgsFunction: func(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
-			connection, err := k8s.NewK8sConnection(configFlags)
-			if err != nil {
-				return nil, cobra.ShellCompDirectiveNoFileComp
-			}
-
-			workloadName, err := workloadListFunction(*connection)
-			if err != nil {
-				return nil, cobra.ShellCompDirectiveNoFileComp
-			}
-
-			return workloadName, cobra.ShellCompDirectiveNoFileComp
-		},
+// FlagsPodResolver resolves pods based on global --pod/--deployment/--selector flags
+func FlagsPodResolver(ctx context.Context, k8sClient k8s.Client, cmd *cobra.Command) ([]string, error) {
+	root := cmd.Root()
+	pods, err := root.PersistentFlags().GetStringArray("pod")
+	if err != nil {
+		return nil, err
+	}
+	deployments, err := root.PersistentFlags().GetStringArray("deployment")
+	if err != nil {
+		return nil, err
+	}
+	selectors, err := root.PersistentFlags().GetStringArray("selector")
+	if err != nil {
+		return nil, err
 	}
 
-	// Stupid hack: Add child command with name of the selected pod.
-	var wrapperCmd = &cobra.Command{Use: getSubcommandWorkloadName()}
-	for _, commandCreator := range subCommandsCreators {
-		wrapperCmd.AddCommand(commandCreator(configFlags, podResolver))
+	// Expand deployments to pods
+	for _, d := range deployments {
+		names, err := k8sClient.GetDeploymentPods(ctx, k8sClient.Namespace(), d)
+		if err != nil {
+			cmd.SilenceUsage = true
+			return nil, err
+		}
+		pods = append(pods, names...)
 	}
-	childCmd.AddCommand(wrapperCmd)
 
-	parentCmd.AddCommand(childCmd)
-}
+	// Expand selectors to pods
+	for _, s := range selectors {
+		names, err := k8sClient.ListPods(ctx, k8sClient.Namespace(), s)
+		if err != nil {
+			cmd.SilenceUsage = true
+			return nil, err
+		}
+		pods = append(pods, names...)
+	}
 
-func getSubcommandWorkloadName() string {
-	var position = 0
-	for _, arg := range os.Args {
-		if strings.HasPrefix(arg, "-") {
-			// XXX: This doesn't really work
+	// Deduplicate
+	seen := map[string]struct{}{}
+	var result []string
+	for _, p := range pods {
+		if p == "" {
 			continue
 		}
-
-		if position == 1 && (arg == "help" || arg == cobra.ShellCompRequestCmd || arg == cobra.ShellCompNoDescRequestCmd) {
-			position = 0
+		if _, ok := seen[p]; !ok {
+			seen[p] = struct{}{}
+			result = append(result, p)
 		}
-
-		if position == 2 && arg != "" {
-			return arg
-		}
-		position++
-	}
-	return ""
-}
-
-func PodPodResolver(_ *k8s.Connection, cmd *cobra.Command) ([]string, error) {
-	return []string{cmd.Parent().Name()}, nil
-}
-
-func DeploymentPodResolver(connection *k8s.Connection, cmd *cobra.Command) ([]string, error) {
-	deployment, err := connection.Clientset.
-		AppsV1().
-		Deployments(connection.Namespace).
-		Get(context.Background(), cmd.Parent().Name(), v1.GetOptions{})
-	if err != nil {
-		return nil, err
 	}
 
-	selector, err := v1.LabelSelectorAsSelector(deployment.Spec.Selector)
-	if err != nil {
-		return nil, err
-	}
-
-	podList, err := connection.Clientset.
-		CoreV1().
-		Pods(connection.Namespace).
-		List(context.Background(), v1.ListOptions{LabelSelector: selector.String()})
-	if err != nil {
-		return nil, err
-	}
-
-	var podNames []string
-	for _, pod := range podList.Items {
-		podNames = append(podNames, pod.Name)
-	}
-
-	return podNames, nil
+	return result, nil
 }

@@ -1,22 +1,23 @@
-package acuator
+package actuator
 
 import (
-	"errors"
-	"fmt"
+	"net/url"
+	"sort"
 )
 
-func (c ActuatorClient) GetLoggers() ([]LoggerConfiguration, error) {
-	response, err := c.resty.R().
-		SetResult(loggersResponse{}).
-		Get("/loggers")
+func (c *actuatorClient) GetLoggers() ([]LoggerConfiguration, error) {
+	resp, err := c.httpClient.Get("/loggers")
 	if err != nil {
 		return nil, err
 	}
-	if response.IsError() {
-		return nil, fmt.Errorf("unable to get loggers: %s", response.Status())
+	if resp.IsErrorStatus() {
+		return nil, endpointError("loggers", resp.Status, "unable to get loggers")
 	}
 
-	actuatorResponse := response.Result().(*loggersResponse)
+	var actuatorResponse loggersResponse
+	if err := parseJSON(resp.Body, &actuatorResponse); err != nil {
+		return nil, err
+	}
 
 	var loggers []LoggerConfiguration
 	for loggerName, logger := range actuatorResponse.Loggers {
@@ -27,24 +28,26 @@ func (c ActuatorClient) GetLoggers() ([]LoggerConfiguration, error) {
 		})
 	}
 
+	sort.Slice(loggers, func(i, j int) bool {
+		return loggers[i].Name < loggers[j].Name
+	})
+
 	return loggers, nil
 }
 
-func (c ActuatorClient) SetLoggerLevel(logger string, level string) error {
-	response, err := c.resty.R().
-		SetPathParams(map[string]string{
-			"logger": logger,
-		}).
-		SetBody(setLoggerLevelRequest{
-			ConfiguredLevel: &level,
-		}).
-		Post("/loggers/{logger}")
+func (c *actuatorClient) SetLoggerLevel(logger string, level string) error {
+	path := "/loggers/" + url.PathEscape(logger)
+	body := setLoggerLevelRequest{
+		ConfiguredLevel: &level,
+	}
+
+	resp, err := c.httpClient.Post(path, body)
 	if err != nil {
 		return err
 	}
 
-	if response.IsError() {
-		return errors.New("Unexpected HTTP response status: " + response.Status())
+	if resp.IsErrorStatus() {
+		return endpointError("loggers", resp.Status, "unable to set logger level")
 	}
 
 	return nil

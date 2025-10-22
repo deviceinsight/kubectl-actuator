@@ -1,28 +1,34 @@
 package cmd
 
 import (
+	"context"
 	"fmt"
+	"github.com/deviceinsight/kubectl-actuator/internal/actuator"
 	"github.com/liggitt/tabwriter"
-	"gitlab.device-insight.com/mwa/kubectl-actuator-plugin/internal/acuator"
 	"os"
 	"sort"
 	"strings"
 )
 
-func (o *loggerCommandOperations) runGetLogger() error {
+func (o *loggerCommandOperations) runGetLogger(ctx context.Context) error {
 	size := len(o.pods)
 	for i, pod := range o.pods {
-		if size > 1 {
-			fmt.Println(pod + ": ")
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		default:
 		}
 
-		err := o.printLoggerForPod(pod)
+		if size > 1 {
+			fmt.Printf("%s:\n", pod)
+		}
+
+		err := o.printLoggerForPod(ctx, pod)
 		if err != nil {
-			fmt.Println("Error: " + err.Error())
+			fmt.Printf("Error: %v\n", err)
 		}
 
 		if i != size-1 {
-			// Add new line if it is not the last element
 			fmt.Println()
 		}
 	}
@@ -30,13 +36,13 @@ func (o *loggerCommandOperations) runGetLogger() error {
 	return nil
 }
 
-func (o *loggerCommandOperations) printLoggerForPod(podName string) error {
-	actuator, err := acuator.NewActuatorClient(o.connection, podName)
+func (o *loggerCommandOperations) printLoggerForPod(ctx context.Context, podName string) error {
+	client, err := actuator.NewActuatorClient(ctx, o.transportFactory, o.k8sClient, podName)
 	if err != nil {
 		return err
 	}
 
-	loggers, err := actuator.GetLoggers()
+	loggers, err := client.GetLoggers()
 	if err != nil {
 		return err
 	}

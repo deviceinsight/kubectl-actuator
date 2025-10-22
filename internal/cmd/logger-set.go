@@ -1,24 +1,30 @@
 package cmd
 
 import (
+	"context"
 	"fmt"
-	"gitlab.device-insight.com/mwa/kubectl-actuator-plugin/internal/acuator"
+	"github.com/deviceinsight/kubectl-actuator/internal/actuator"
 )
 
-func (o *loggerCommandOperations) runSetLogger() error {
+func (o *loggerCommandOperations) runSetLogger(ctx context.Context) error {
 	size := len(o.pods)
 	for i, pod := range o.pods {
-		if size > 1 {
-			fmt.Println(pod + ": ")
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		default:
 		}
 
-		err := o.setLoggerForPod(pod)
+		if size > 1 {
+			fmt.Printf("%s:\n", pod)
+		}
+
+		err := o.setLoggerForPod(ctx, pod)
 		if err != nil {
-			fmt.Println("Error: " + err.Error())
+			fmt.Printf("Error: %v\n", err)
 		}
 
 		if i != size-1 {
-			// Add new line if it is not the last element
 			fmt.Println()
 		}
 	}
@@ -26,13 +32,13 @@ func (o *loggerCommandOperations) runSetLogger() error {
 	return nil
 }
 
-func (o *loggerCommandOperations) setLoggerForPod(podName string) error {
-	actuator, err := acuator.NewActuatorClient(o.connection, podName)
+func (o *loggerCommandOperations) setLoggerForPod(ctx context.Context, podName string) error {
+	client, err := actuator.NewActuatorClient(ctx, o.transportFactory, o.k8sClient, podName)
 	if err != nil {
 		return err
 	}
 
-	err = actuator.SetLoggerLevel(o.loggerName, o.targetLevel)
+	err = client.SetLoggerLevel(o.loggerName, o.targetLevel)
 	if err != nil {
 		return err
 	}

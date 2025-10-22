@@ -2,7 +2,9 @@ package k8s
 
 import (
 	"context"
-	"github.com/pkg/errors"
+	"fmt"
+
+	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/runtime/serializer"
@@ -14,16 +16,20 @@ import (
 )
 
 type Connection struct {
-	Clientset  *kubernetes.Clientset
-	RestConfig *rest.Config
-	RestClient *rest.RESTClient
-	Namespace  string
+	clientset  kubernetes.Interface
+	restConfig *rest.Config
+	restClient *rest.RESTClient
+	namespace  string
 }
+
+// Ensure Connection implements K8sClient and TransportFactory
+var _ Client = (*Connection)(nil)
+var _ TransportFactory = (*Connection)(nil)
 
 func NewK8sConnection(options *genericclioptions.ConfigFlags) (*Connection, error) {
 	restConfig, err := options.ToRESTConfig()
 	if err != nil {
-		return nil, errors.Wrap(err, "failed to read kubeconfig")
+		return nil, fmt.Errorf("failed to read kubeconfig: %w", err)
 	}
 	restConfig.APIPath = "/api"
 	restConfig.GroupVersion = &schema.GroupVersion{Group: "", Version: "v1"}
@@ -31,7 +37,7 @@ func NewK8sConnection(options *genericclioptions.ConfigFlags) (*Connection, erro
 
 	clientset, err := kubernetes.NewForConfig(restConfig)
 	if err != nil {
-		return nil, errors.Wrap(err, "failed to create Clientset")
+		return nil, fmt.Errorf("failed to create Clientset: %w", err)
 	}
 
 	restClient, err := rest.RESTClientFor(restConfig)
@@ -44,11 +50,17 @@ func NewK8sConnection(options *genericclioptions.ConfigFlags) (*Connection, erro
 		return nil, err
 	}
 
-	return &Connection{Clientset: clientset, RestConfig: restConfig, RestClient: restClient, Namespace: namespace}, nil
+	return &Connection{clientset: clientset, restConfig: restConfig, restClient: restClient, namespace: namespace}, nil
 }
 
-func (c Connection) ListPods() ([]string, error) {
-	list, err := c.Clientset.CoreV1().Pods(c.Namespace).List(context.Background(), metav1.ListOptions{Limit: 1000})
+func (c *Connection) GetPod(ctx context.Context, namespace, name string) (*corev1.Pod, error) {
+	return c.clientset.CoreV1().Pods(namespace).Get(ctx, name, metav1.GetOptions{})
+}
+
+func (c *Connection) ListPods(ctx context.Context, namespace, labelSelector string) ([]string, error) {
+	list, err := c.clientset.CoreV1().Pods(namespace).List(ctx, metav1.ListOptions{
+		LabelSelector: labelSelector,
+	})
 	if err != nil {
 		return nil, err
 	}
@@ -61,16 +73,50 @@ func (c Connection) ListPods() ([]string, error) {
 	return foundResources, nil
 }
 
-func (c Connection) ListDeployments() ([]string, error) {
-	list, err := c.Clientset.AppsV1().Deployments(c.Namespace).List(context.Background(), metav1.ListOptions{Limit: 1000})
+func (c *Connection) ListDeployments(ctx context.Context, namespace string) ([]string, error) {
+	list, err := c.clientset.AppsV1().Deployments(namespace).List(ctx, metav1.ListOptions{})
 	if err != nil {
 		return nil, err
 	}
 
 	var foundResources []string
-	for _, pod := range list.Items {
-		foundResources = append(foundResources, pod.Name)
+	for _, deployment := range list.Items {
+		foundResources = append(foundResources, deployment.Name)
 	}
 
 	return foundResources, nil
+}
+
+func (c *Connection) GetDeploymentPods(ctx context.Context, namespace, deploymentName string) ([]string, error) {
+	deployment, err := c.clientset.AppsV1().Deployments(namespace).Get(ctx, deploymentName, metav1.GetOptions{})
+	if err != nil {
+		return nil, err
+	}
+
+	selector, err := metav1.LabelSelectorAsSelector(deployment.Spec.Selector)
+	if err != nil {
+		return nil, err
+	}
+
+	podList, err := c.clientset.CoreV1().Pods(namespace).List(ctx, metav1.ListOptions{
+		LabelSelector: selector.String(),
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	var podNames []string
+	for _, pod := range podList.Items {
+		podNames = append(podNames, pod.Name)
+	}
+
+	return podNames, nil
+}
+
+func (c *Connection) Clientset() kubernetes.Interface {
+	return c.clientset
+}
+
+func (c *Connection) Namespace() string {
+	return c.namespace
 }

@@ -10,15 +10,14 @@ A kubectl plugin for interacting with Spring Boot Actuator endpoints.
 
 ## Installation
 
-Download the latest release from the [GitHub releases page](https://github.com/deviceinsight/kubectl-actuator/releases):
+Make sure you have [krew](https://krew.sigs.k8s.io/) installed.
 
 ```bash
-# Extract and install
-tar -xzf kubectl-actuator_*.tar.gz
-mv kubectl-actuator ~/.local/bin/
+# Install the plugin
+kubectl krew install --manifest-url https://raw.githubusercontent.com/deviceinsight/kubectl-actuator/refs/heads/main/.krew.yaml
 
-# Enable shell completion
-ln -sr ~/.local/bin/kubectl-actuator ~/.local/bin/kubectl_complete-actuator
+# Enable shell completion (optional)
+ln -sr ~/.krew/bin/kubectl-actuator ~/.krew/bin/kubectl_complete-actuator
 ```
 
 ## Configuration

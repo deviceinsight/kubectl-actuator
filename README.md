@@ -41,7 +41,7 @@ All commands support target selection:
 
 Standard kubectl flags such as `--namespace` or `--context` are also supported.
 
-### Logger Commands
+### Loggers
 
 #### List all loggers
 
@@ -149,26 +149,11 @@ Automatically targets all pods from the deployment's selector:
 Use standard Kubernetes label selectors to target pods:
 
 ```bash
-# Target pods by single label
-❯ kubectl actuator -l app=myapp logger
-
-# Target pods by multiple labels
-❯ kubectl actuator --selector app=myapp,env=production scheduled-tasks
+# Target pods by label
+❯ kubectl actuator --selector app.kubernetes.io/component=backend logger
 
 # Combine with other target options
-❯ kubectl actuator -l tier=backend --deployment frontend-app logger
-```
-
-#### Namespace selection
-
-Use standard kubectl namespace flags:
-
-```bash
-# Specific namespace
-❯ kubectl actuator -n production --deployment my-app logger
-
-# All namespaces
-❯ kubectl actuator --all-namespaces --pod my-pod logger
+❯ kubectl actuator --selector app.kubernetes.io/component=backend --deployment frontend-app logger
 ```
 
 ## Building from Source

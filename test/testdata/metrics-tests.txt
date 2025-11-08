@@ -1,0 +1,41 @@
+-- test: metrics list all --
+-- command --
+kubectl-actuator --pod {{pod}} metrics
+-- expect --
+jvm.memory.used
+-- expect --
+jvm.memory.max
+-- expect --
+jvm.threads.live
+-- expect --
+system.cpu.count
+-- expect --
+process.uptime
+
+
+-- test: metrics query specific metric --
+-- command --
+kubectl-actuator --pod {{pod}} metrics jvm.memory.used
+-- expect --
+NAME         jvm.memory.used
+-- expect --
+BASE UNIT    bytes
+-- expect --
+MEASUREMENTS
+-- expect --
+STATISTIC
+
+
+-- test: metrics filter by pattern --
+-- command --
+kubectl-actuator --pod {{pod}} metrics --filter jvm.memory
+-- expect --
+jvm.memory.committed
+-- expect --
+jvm.memory.max
+-- expect --
+jvm.memory.used
+-- expect:not --
+jvm.threads.live
+-- expect:not --
+system.cpu.count

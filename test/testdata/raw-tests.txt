@@ -1,0 +1,28 @@
+-- test: raw endpoint basic access --
+-- command --
+kubectl-actuator --pod {{pod}} raw /health
+-- expect --
+"status"
+
+
+-- test: raw endpoint non-existent --
+-- command --
+kubectl-actuator --pod {{pod}} raw /nonexistent
+-- expect --
+"error":
+
+
+-- test: raw endpoint without slash prefix --
+-- command --
+kubectl-actuator --pod {{pod}} raw health
+-- expect --
+"status"
+
+
+-- test: raw multi-pod --
+-- command --
+kubectl-actuator --pod {{pod[0]}} --pod {{pod[1]}} raw /health
+-- expect --
+"pods":
+-- expect --
+"status"

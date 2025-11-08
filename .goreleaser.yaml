@@ -11,6 +11,11 @@ builds:
       - linux
       - windows
       - darwin
+    ldflags:
+      - -s -w
+      - -X github.com/deviceinsight/kubectl-actuator/internal/cmd.Version={{.Version}}
+      - -X github.com/deviceinsight/kubectl-actuator/internal/cmd.GitCommit={{.Commit}}
+      - -X github.com/deviceinsight/kubectl-actuator/internal/cmd.BuildDate={{.Date}}
 
 archives:
   - formats: [tar.gz]

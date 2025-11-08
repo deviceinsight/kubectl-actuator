@@ -20,6 +20,8 @@ type restyHTTPClient struct {
 	resty *resty.Client
 }
 
+var _ HTTPClient = (*restyHTTPClient)(nil)
+
 func newRestyHTTPClient(client *resty.Client) HTTPClient {
 	return &restyHTTPClient{resty: client}
 }
@@ -50,4 +52,15 @@ func (c *restyHTTPClient) Post(path string, body interface{}) (*Response, error)
 
 func parseJSON(data []byte, target interface{}) error {
 	return json.Unmarshal(data, target)
+}
+
+func (c *actuatorClient) getAndParse(path, endpoint, errorPrefix string, target interface{}) error {
+	resp, err := c.httpClient.Get(path)
+	if err != nil {
+		return err
+	}
+	if resp.IsErrorStatus() {
+		return endpointError(endpoint, resp.Status, errorPrefix)
+	}
+	return parseJSON(resp.Body, target)
 }

@@ -1,0 +1,61 @@
+-- test: threaddump basic --
+-- command --
+kubectl-actuator --pod {{pod}} threaddump
+-- expect:regex --
+Total Threads: \d+
+-- expect:regex --
+Thread #\d+:
+-- expect:regex --
+(RUNNABLE|WAITING|TIMED_WAITING|BLOCKED)
+-- expect:regex --
+at\s+[a-zA-Z0-9._$]+\.[a-zA-Z0-9_$]+\(
+
+
+-- test: threaddump filter by state --
+-- command --
+kubectl-actuator --pod {{pod}} threaddump --state RUNNABLE
+-- expect:regex --
+Total Threads: \d+
+-- expect --
+Showing
+-- expect --
+filtered threads
+-- expect --
+State: RUNNABLE
+
+
+-- test: threaddump filter by name --
+-- command --
+kubectl-actuator --pod {{pod}} threaddump --name http
+-- expect:regex --
+Total Threads: \d+
+-- expect --
+Showing
+-- expect --
+filtered threads
+-- expect:regex --
+http.*nio
+
+
+-- test: threaddump summary mode --
+-- command --
+kubectl-actuator --pod {{pod}} threaddump --summary
+-- expect:regex --
+Total Threads: \d+
+-- expect --
+Thread States:
+-- expect:regex --
+RUNNABLE: \d+
+-- expect:not --
+Thread #
+-- expect:not --
+Stack Trace:
+
+
+-- test: threaddump multi-pod --
+-- command --
+kubectl-actuator --pod {{pod[0]}} --pod {{pod[1]}} threaddump
+-- expect:regex --
+{{pod[0]}}:
+-- expect:regex --
+(Thread|threads|Total Threads:)

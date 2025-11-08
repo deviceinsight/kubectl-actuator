@@ -35,7 +35,7 @@ func TestFormatMs(t *testing.T) {
 	}
 }
 
-func TestFriendlyDuration(t *testing.T) {
+func TestFormatDurationCompact(t *testing.T) {
 	tests := []struct {
 		name string
 		d    time.Duration
@@ -54,9 +54,9 @@ func TestFriendlyDuration(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := friendlyDuration(tt.d)
+			got := formatDurationCompact(tt.d)
 			if got != tt.want {
-				t.Errorf("friendlyDuration(%v) = %v, want %v", tt.d, got, tt.want)
+				t.Errorf("formatDurationCompact(%v) = %v, want %v", tt.d, got, tt.want)
 			}
 		})
 	}

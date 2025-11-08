@@ -1,18 +1,11 @@
 package actuator
 
 func (c *actuatorClient) GetScheduledTasks() (*ScheduledTasksResponse, error) {
-	resp, err := c.httpClient.Get("/scheduledtasks")
-	if err != nil {
+	var response ScheduledTasksResponse
+	if err := c.getAndParse("/scheduledtasks", "scheduledtasks", "failed to get scheduled tasks", &response); err != nil {
 		return nil, err
 	}
-	if resp.IsErrorStatus() {
-		return nil, endpointError("scheduledtasks", resp.Status, "unable to get scheduled tasks")
-	}
-	var res ScheduledTasksResponse
-	if err := parseJSON(resp.Body, &res); err != nil {
-		return nil, err
-	}
-	return &res, nil
+	return &response, nil
 }
 
 type ScheduledTasksResponse struct {

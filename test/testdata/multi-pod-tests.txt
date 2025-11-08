@@ -1,0 +1,25 @@
+-- test: multiple pods with deployment --
+-- command --
+kubectl-actuator --deployment {{deployment}} logger
+-- expect:regex --
+{{pod[0]}}:
+-- expect:regex --
+LOGGER\s+LEVEL
+-- expect:regex --
+ROOT\s+INFO
+-- expect:regex --
+{{pod[1]}}:
+-- expect:regex --
+LOGGER\s+LEVEL
+-- expect:regex --
+ROOT\s+INFO
+
+-- test: label selector --
+-- command --
+kubectl-actuator --selector component=backend info
+-- expect --
+{{pod[0]}}:
+-- expect --
+{{pod[1]}}:
+-- expect --
+Name:         test-actuator-app

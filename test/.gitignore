@@ -1,0 +1,16 @@
+# Test binary
+kubectl-actuator
+
+# Go test cache
+*.test
+*.out
+
+# Spring Boot
+spring-app/target/
+spring-app/.mvn/
+spring-app/mvnw
+spring-app/mvnw.cmd
+
+# Temp files
+kubeconfig-*.yaml
+/tmp/

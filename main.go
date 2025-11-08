@@ -1,10 +1,11 @@
 package main
 
 import (
-	"github.com/deviceinsight/kubectl-actuator/cmd"
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/deviceinsight/kubectl-actuator/cmd"
 )
 
 func main() {

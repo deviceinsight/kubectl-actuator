@@ -1,0 +1,42 @@
+-- test: env list all properties --
+-- command --
+kubectl-actuator --pod {{pod}} env
+-- expect --
+java.version
+-- expect --
+spring.application.name
+
+
+-- test: env output name only --
+-- command --
+kubectl-actuator --pod {{pod}} env -o name
+-- expect --
+spring.application.name
+-- expect --
+java.version
+-- expect --
+JAVA_HOME
+
+
+-- test: env query specific property --
+-- command --
+kubectl-actuator --pod {{pod}} env java.version
+-- expect --
+NAME:
+-- expect --
+VALUE:
+-- expect --
+SOURCE:
+
+
+-- test: env filter by pattern --
+-- command --
+kubectl-actuator --pod {{pod}} env --filter spring.application
+-- expect --
+spring.application.name
+-- expect --
+spring.application.version
+-- expect --
+spring.application.pid
+-- expect:not --
+java.version

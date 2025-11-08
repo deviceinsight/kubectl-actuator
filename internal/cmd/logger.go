@@ -2,58 +2,56 @@ package cmd
 
 import (
 	"context"
-	"errors"
 	"fmt"
+	"slices"
 	"strings"
 
-	"github.com/deviceinsight/kubectl-actuator/internal/actuator"
-	"github.com/deviceinsight/kubectl-actuator/internal/k8s"
 	"github.com/spf13/cobra"
 	"k8s.io/cli-runtime/pkg/genericclioptions"
 )
 
 type loggerCommandOperations struct {
-	k8sCliFlags      *genericclioptions.ConfigFlags
-	k8sClient        k8s.Client
-	transportFactory k8s.TransportFactory
-	podResolver      PodResolver
-
-	pods           []string
+	baseOperations
 	showAllLoggers bool
 	loggerName     string
 	targetLevel    string
+	isSettingLevel bool
 }
 
-var supportedLevels = []string{"TRACE", "DEBUG", "INFO", "WARN", "ERROR", "FATAL", "OFF"}
+var supportedLevels = []string{"TRACE", "DEBUG", "INFO", "WARN", "ERROR", "FATAL", "OFF", "RESET"}
 
 func NewLoggerCommand(configFlags *genericclioptions.ConfigFlags, podResolver PodResolver) *cobra.Command {
-	operations := &loggerCommandOperations{k8sCliFlags: configFlags, podResolver: podResolver}
+	operations := &loggerCommandOperations{
+		baseOperations: baseOperations{
+			k8sCliFlags: configFlags,
+			podResolver: podResolver,
+		},
+	}
 
 	cmd := &cobra.Command{
-		Use:   "logger [com.example.logger LEVEL]",
+		Use:   "logger [logger-name [LEVEL]]",
 		Short: "Manage loggers",
-		Args:  cobra.MaximumNArgs(2),
+		Long: `View and configure logger levels.
+
+Without arguments, shows all loggers with explicitly configured levels.
+With a logger name, shows loggers matching that prefix.
+With a logger name and level, sets the logger to that level.
+
+Use RESET to clear the configured level and inherit from parent.
+
+Valid levels: TRACE, DEBUG, INFO, WARN, ERROR, FATAL, OFF, RESET`,
+		Args: cobra.MaximumNArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			err := operations.complete(cmd, args)
-			if err != nil {
+			if err := operations.complete(cmd, args); err != nil {
 				return err
 			}
-
-			err = operations.validate()
-			if err != nil {
+			if err := operations.validate(); err != nil {
 				return err
 			}
-
-			if operations.targetLevel != "" {
-				err = operations.runSetLogger(cmd.Context())
-			} else {
-				err = operations.runGetLogger(cmd.Context())
+			if operations.isSettingLevel {
+				return RunForEachPod(cmd.Context(), operations.pods, "set logger level", operations.runSetForPod)
 			}
-			if err != nil {
-				return err
-			}
-
-			return nil
+			return RunForEachPod(cmd.Context(), operations.pods, "get loggers", operations.runForPod)
 		},
 		ValidArgsFunction: func(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
 			err := operations.complete(cmd, args)
@@ -76,44 +74,38 @@ func NewLoggerCommand(configFlags *genericclioptions.ConfigFlags, podResolver Po
 }
 
 func (o *loggerCommandOperations) complete(cmd *cobra.Command, args []string) error {
-	connection, err := k8s.NewK8sConnection(o.k8sCliFlags)
-	if err != nil {
+	if err := o.baseOperations.complete(cmd); err != nil {
 		return err
 	}
-	o.k8sClient = connection
-	o.transportFactory = connection
-
-	pods, err := o.podResolver(cmd.Context(), connection, cmd)
-	if err != nil {
-		return err
-	}
-	o.pods = pods
 
 	if len(args) >= 1 {
 		o.loggerName = args[0]
 	}
 
 	if len(args) >= 2 {
-		o.targetLevel = strings.ToUpper(args[1])
+		level := strings.ToUpper(args[1])
+		if level == "RESET" {
+			o.targetLevel = "" // Empty string signals reset
+		} else {
+			o.targetLevel = level
+		}
+		o.isSettingLevel = true
 	}
 
 	return nil
 }
 
 func (o *loggerCommandOperations) validate() error {
-	if len(o.pods) == 0 {
-		return errors.New("No pods specified. Please specify at least one pod")
+	if err := o.validatePods(); err != nil {
+		return err
 	}
 
-	var found = false
-	for _, supportedLevel := range supportedLevels {
-		if o.targetLevel == supportedLevel {
-			found = true
-		}
+	if o.targetLevel != "" && !slices.Contains(supportedLevels, o.targetLevel) {
+		return fmt.Errorf("invalid log level '%s'\nValid levels: %v", o.targetLevel, supportedLevels)
 	}
 
-	if o.targetLevel != "" && !found {
-		return fmt.Errorf("unsupported log level: %s. Supported levels: %v", o.targetLevel, supportedLevels)
+	if o.isSettingLevel && o.targetLevel == "" && strings.EqualFold(o.loggerName, "ROOT") {
+		return fmt.Errorf("cannot reset ROOT logger: it has no parent to inherit from")
 	}
 
 	return nil
@@ -124,7 +116,7 @@ func (o *loggerCommandOperations) validArgsLogger(ctx context.Context) ([]string
 		return nil, cobra.ShellCompDirectiveNoFileComp
 	}
 
-	client, err := actuator.NewActuatorClient(ctx, o.transportFactory, o.k8sClient, o.pods[0])
+	client, err := o.actuatorClientFactory.NewClient(ctx, o.pods[0])
 	if err != nil {
 		return nil, cobra.ShellCompDirectiveNoFileComp
 	}

@@ -3,41 +3,12 @@ package cmd
 import (
 	"context"
 	"fmt"
-	"github.com/deviceinsight/kubectl-actuator/internal/actuator"
-	"github.com/liggitt/tabwriter"
-	"os"
 	"sort"
 	"strings"
 )
 
-func (o *loggerCommandOperations) runGetLogger(ctx context.Context) error {
-	size := len(o.pods)
-	for i, pod := range o.pods {
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		default:
-		}
-
-		if size > 1 {
-			fmt.Printf("%s:\n", pod)
-		}
-
-		err := o.printLoggerForPod(ctx, pod)
-		if err != nil {
-			fmt.Printf("Error: %v\n", err)
-		}
-
-		if i != size-1 {
-			fmt.Println()
-		}
-	}
-
-	return nil
-}
-
-func (o *loggerCommandOperations) printLoggerForPod(ctx context.Context, podName string) error {
-	client, err := actuator.NewActuatorClient(ctx, o.transportFactory, o.k8sClient, podName)
+func (o *loggerCommandOperations) runForPod(ctx context.Context, podName string) error {
+	client, err := o.actuatorClientFactory.NewClient(ctx, podName)
 	if err != nil {
 		return err
 	}
@@ -56,13 +27,11 @@ func (o *loggerCommandOperations) printLoggerForPod(ctx context.Context, podName
 		return strings.Compare(loggers[i].Name, loggers[j].Name) < 0
 	})
 
-	printer := tabwriter.NewWriter(os.Stdout, 6, 4, 3, ' ', 0)
+	w := newTableWriter()
+	defer func() { _ = w.Flush() }()
 
-	_, err = fmt.Fprintln(printer, "LOGGER\tLEVEL")
-	if err != nil {
-		return err
-	}
-	var skippedFiltered = 0
+	_, _ = fmt.Fprintln(w, "LOGGER\tLEVEL")
+	skippedFiltered := 0
 	for _, logger := range loggers {
 		level := ""
 
@@ -83,18 +52,11 @@ func (o *loggerCommandOperations) printLoggerForPod(ctx context.Context, podName
 			continue
 		}
 
-		_, err = fmt.Fprintf(printer, "%v\t%v\n", logger.Name, level)
-		if err != nil {
-			return err
-		}
-	}
-	err = printer.Flush()
-	if err != nil {
-		return err
+		_, _ = fmt.Fprintf(w, "%v\t%v\n", logger.Name, level)
 	}
 
 	if skippedFiltered > 0 {
-		fmt.Println(skippedFiltered, "non-matching loggers omitted")
+		defer fmt.Println(skippedFiltered, "non-matching loggers omitted")
 	}
 
 	return nil

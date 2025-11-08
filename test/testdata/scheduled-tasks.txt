@@ -1,0 +1,11 @@
+-- test: scheduled tasks --
+-- command --
+kubectl-actuator --pod {{pod}} scheduled-tasks
+-- expect:regex --
+TYPE\s+TARGET\s+SCHEDULE\s+NEXT\s+LAST\s+STATUS
+-- expect:regex --
+cron\s+TestScheduledTasks\.cronTask\s+cron\(0 \* \* \* \* \*\)
+-- expect:regex --
+fixedDelay\s+TestScheduledTasks\.fixedDelayTask\s+fixedDelay=5m
+-- expect:regex --
+fixedRate\s+TestScheduledTasks\.fixedRateTask\s+fixedRate=30m

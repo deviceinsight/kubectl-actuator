@@ -1,0 +1,43 @@
+-- test: logger list --
+-- command --
+kubectl-actuator --pod {{pod}} logger
+-- expect:regex --
+LOGGER\s+LEVEL
+-- expect:regex --
+ROOT\s+INFO
+-- expect:regex --
+com\.example\.testapp\s+INFO
+-- expect:regex --
+org\.apache\.catalina\.startup\.DigesterFactory\s+ERROR
+-- expect:regex --
+org\.springframework\.web\s+INFO
+
+
+-- test: logger set level and verify --
+-- command --
+kubectl-actuator --pod {{pod}} logger com.example.testapp DEBUG
+-- command --
+kubectl-actuator --pod {{pod}} logger
+-- expect:regex --
+LOGGER\s+LEVEL
+-- expect:regex --
+com\.example\.testapp\s+DEBUG
+-- command --
+kubectl-actuator --pod {{pod}} logger com.example.testapp INFO
+-- command --
+kubectl-actuator --pod {{pod}} logger
+-- expect:regex --
+com\.example\.testapp\s+INFO
+
+
+-- test: logger show all including effective levels --
+-- command --
+kubectl-actuator --pod {{pod}} logger --all-loggers
+-- expect:regex --
+LOGGER\s+LEVEL
+-- expect:regex --
+ROOT\s+INFO
+-- expect:regex --
+com\.example\.testapp\s+INFO
+-- expect:regex --
+\(effective\)

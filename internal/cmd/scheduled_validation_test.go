@@ -24,7 +24,7 @@ func TestScheduledTasksValidation(t *testing.T) {
 		{
 			name:    "valid with wide output",
 			pods:    []string{"pod-1"},
-			output:  "wide",
+			output:  OutputFormatWide,
 			wantErr: false,
 		},
 		{
@@ -32,35 +32,35 @@ func TestScheduledTasksValidation(t *testing.T) {
 			pods:        []string{"pod-1"},
 			output:      "json",
 			wantErr:     true,
-			errContains: "invalid output format",
+			errContains: "not recognized",
 		},
 		{
 			name:        "invalid output format yaml",
 			pods:        []string{"pod-1"},
 			output:      "yaml",
 			wantErr:     true,
-			errContains: "invalid output format",
+			errContains: "not recognized",
 		},
 		{
 			name:        "invalid output format table",
 			pods:        []string{"pod-1"},
 			output:      "table",
 			wantErr:     true,
-			errContains: "invalid output format",
+			errContains: "not recognized",
 		},
 		{
 			name:        "no pods specified",
 			pods:        []string{},
 			output:      "",
 			wantErr:     true,
-			errContains: "No pods specified",
+			errContains: "no pods selected",
 		},
 		{
 			name:        "no pods with wide output",
 			pods:        []string{},
-			output:      "wide",
+			output:      OutputFormatWide,
 			wantErr:     true,
-			errContains: "No pods specified",
+			errContains: "no pods selected",
 		},
 		{
 			name:    "multiple pods valid",
@@ -78,9 +78,9 @@ func TestScheduledTasksValidation(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			ops := &scheduledTasksOperations{
-				pods:   tt.pods,
-				output: tt.output,
+			ops := &scheduledTasksCommandOperations{
+				baseOperations: baseOperations{pods: tt.pods},
+				output:         tt.output,
 			}
 
 			err := ops.validate()
@@ -106,18 +106,18 @@ func TestScheduledTasksWideMode(t *testing.T) {
 		wantWideMode bool
 	}{
 		{"default output", "", false},
-		{"wide output", "wide", true},
+		{"wide output", OutputFormatWide, true},
 		{"invalid output", "json", false},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			ops := &scheduledTasksOperations{
+			ops := &scheduledTasksCommandOperations{
 				output: tt.output,
 			}
 
 			// Simulate complete() setting wideMode
-			ops.wideMode = ops.output == "wide"
+			ops.wideMode = ops.output == OutputFormatWide
 
 			if ops.wideMode != tt.wantWideMode {
 				t.Errorf("wideMode = %v, want %v", ops.wideMode, tt.wantWideMode)
@@ -138,8 +138,8 @@ func TestScheduledTasksErrorMessages(t *testing.T) {
 			pods:   []string{},
 			output: "",
 			wantErrContains: []string{
-				"No pods specified",
-				"Please specify",
+				"no pods selected",
+				"--pod",
 			},
 		},
 		{
@@ -147,27 +147,27 @@ func TestScheduledTasksErrorMessages(t *testing.T) {
 			pods:   []string{"pod-1"},
 			output: "json",
 			wantErrContains: []string{
-				"invalid output format",
+				"not recognized",
 				"json",
 			},
 		},
 		{
-			name:   "invalid format shows supported formats",
+			name:   "invalid format shows allowed formats",
 			pods:   []string{"pod-1"},
 			output: "yaml",
 			wantErrContains: []string{
-				"invalid output format",
+				"not recognized",
 				"yaml",
-				"Supported formats",
+				"Allowed format",
 			},
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			ops := &scheduledTasksOperations{
-				pods:   tt.pods,
-				output: tt.output,
+			ops := &scheduledTasksCommandOperations{
+				baseOperations: baseOperations{pods: tt.pods},
+				output:         tt.output,
 			}
 
 			err := ops.validate()

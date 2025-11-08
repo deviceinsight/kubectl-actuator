@@ -1,0 +1,60 @@
+-- test: health basic check --
+-- command --
+kubectl-actuator --pod {{pod}} health
+-- expect --
+COMPONENT
+-- expect --
+STATUS
+-- expect --
+diskSpace
+-- expect --
+livenessState
+-- expect --
+ping
+-- expect --
+[overall]
+-- expect --
+UP
+
+
+-- test: health check deployment --
+-- command --
+kubectl-actuator --deployment {{deployment}} health
+-- expect:regex --
+{{pod[0]}}:
+-- expect --
+COMPONENT
+-- expect --
+STATUS
+-- expect --
+[overall]
+
+
+-- test: health check label selector --
+-- command --
+kubectl-actuator --selector component=backend health
+-- expect:regex --
+{{pod[0]}}:
+-- expect --
+COMPONENT
+-- expect --
+STATUS
+-- expect --
+[overall]
+
+
+-- test: health multi-pod validates all responses --
+-- command --
+kubectl-actuator --pod {{pod[0]}} --pod {{pod[1]}} health
+-- expect:regex --
+{{pod[0]}}:
+-- expect --
+[overall]
+-- expect --
+UP
+-- expect:regex --
+{{pod[1]}}:
+-- expect --
+[overall]
+-- expect --
+UP

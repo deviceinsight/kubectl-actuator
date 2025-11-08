@@ -1,0 +1,17 @@
+-- test: info --
+-- command --
+kubectl-actuator --pod {{pod}} info
+-- expect --
+Application:
+-- expect --
+Name:         test-actuator-app
+-- expect --
+Description:  Test Spring Boot application with Actuator
+-- expect --
+Build:
+-- expect --
+Group:        com.example
+-- expect --
+Artifact:     test-actuator-app
+-- expect --
+Version:      1.0.0

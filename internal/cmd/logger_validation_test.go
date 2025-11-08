@@ -60,21 +60,21 @@ func TestLoggerValidation(t *testing.T) {
 			pods:        []string{"pod-1"},
 			targetLevel: "VERBOSE",
 			wantErr:     true,
-			errContains: "unsupported log level",
+			errContains: "invalid log level",
 		},
 		{
-			name:        "invalid level lowercase debug",
+			name:        "invalid level lowercase debug - should be uppercase before validation",
 			pods:        []string{"pod-1"},
 			targetLevel: "debug",
 			wantErr:     true,
-			errContains: "unsupported log level",
+			errContains: "invalid log level",
 		},
 		{
 			name:        "invalid level FINE",
 			pods:        []string{"pod-1"},
 			targetLevel: "FINE",
 			wantErr:     true,
-			errContains: "unsupported log level",
+			errContains: "invalid log level",
 		},
 		{
 			name:        "empty level when just getting loggers",
@@ -87,22 +87,22 @@ func TestLoggerValidation(t *testing.T) {
 			pods:        []string{},
 			targetLevel: "INFO",
 			wantErr:     true,
-			errContains: "No pods specified",
+			errContains: "no pods selected",
 		},
 		{
 			name:        "no pods and no level",
 			pods:        []string{},
 			targetLevel: "",
 			wantErr:     true,
-			errContains: "No pods specified",
+			errContains: "no pods selected",
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			ops := &loggerCommandOperations{
-				pods:        tt.pods,
-				targetLevel: tt.targetLevel,
+				baseOperations: baseOperations{pods: tt.pods},
+				targetLevel:    tt.targetLevel,
 			}
 
 			err := ops.validate()
@@ -158,6 +158,18 @@ func TestLoggerLevelParsing(t *testing.T) {
 			wantLevel: "INFO",
 			wantName:  "com.example",
 		},
+		{
+			name:      "RESET level converted to empty string",
+			args:      []string{"com.example", "RESET"},
+			wantLevel: "",
+			wantName:  "com.example",
+		},
+		{
+			name:      "lowercase reset converted to empty string",
+			args:      []string{"com.example", "reset"},
+			wantLevel: "",
+			wantName:  "com.example",
+		},
 	}
 
 	for _, tt := range tests {
@@ -169,7 +181,14 @@ func TestLoggerLevelParsing(t *testing.T) {
 				ops.loggerName = tt.args[0]
 			}
 			if len(tt.args) >= 2 {
-				ops.targetLevel = strings.ToUpper(tt.args[1])
+				level := strings.ToUpper(tt.args[1])
+				if level == "RESET" {
+					ops.targetLevel = ""
+					ops.isSettingLevel = true
+				} else {
+					ops.targetLevel = level
+					ops.isSettingLevel = true
+				}
 			}
 
 			if ops.loggerName != tt.wantName {
@@ -188,7 +207,7 @@ func TestValidArgsLogLevel(t *testing.T) {
 	levels, directive := ops.validArgsLogLevel()
 
 	// Should return all supported levels
-	expectedLevels := []string{"TRACE", "DEBUG", "INFO", "WARN", "ERROR", "FATAL", "OFF"}
+	expectedLevels := []string{"TRACE", "DEBUG", "INFO", "WARN", "ERROR", "FATAL", "OFF", "RESET"}
 
 	if len(levels) != len(expectedLevels) {
 		t.Errorf("got %d levels, want %d", len(levels), len(expectedLevels))
@@ -213,7 +232,7 @@ func TestValidArgsLogLevel(t *testing.T) {
 }
 
 func TestSupportedLevelsConstant(t *testing.T) {
-	expectedLevels := []string{"TRACE", "DEBUG", "INFO", "WARN", "ERROR", "FATAL", "OFF"}
+	expectedLevels := []string{"TRACE", "DEBUG", "INFO", "WARN", "ERROR", "FATAL", "OFF", "RESET"}
 
 	if len(supportedLevels) != len(expectedLevels) {
 		t.Errorf("supportedLevels has %d elements, expected %d", len(supportedLevels), len(expectedLevels))
@@ -243,8 +262,8 @@ func TestLoggerValidationErrorMessages(t *testing.T) {
 			pods:        []string{},
 			targetLevel: "DEBUG",
 			wantErrContains: []string{
-				"No pods specified",
-				"Please specify",
+				"no pods selected",
+				"--pod",
 			},
 		},
 		{
@@ -252,7 +271,7 @@ func TestLoggerValidationErrorMessages(t *testing.T) {
 			pods:        []string{"pod-1"},
 			targetLevel: "INVALID",
 			wantErrContains: []string{
-				"unsupported log level",
+				"invalid log level",
 				"INVALID",
 			},
 		},
@@ -261,9 +280,9 @@ func TestLoggerValidationErrorMessages(t *testing.T) {
 			pods:        []string{"pod-1"},
 			targetLevel: "VERBOSE",
 			wantErrContains: []string{
-				"unsupported log level",
+				"invalid log level",
 				"VERBOSE",
-				"Supported levels",
+				"Valid levels",
 			},
 		},
 	}
@@ -271,8 +290,8 @@ func TestLoggerValidationErrorMessages(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			ops := &loggerCommandOperations{
-				pods:        tt.pods,
-				targetLevel: tt.targetLevel,
+				baseOperations: baseOperations{pods: tt.pods},
+				targetLevel:    tt.targetLevel,
 			}
 
 			err := ops.validate()
@@ -322,8 +341,8 @@ func TestLoggerOperationsMultiplePods(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			ops := &loggerCommandOperations{
-				pods:        tt.pods,
-				targetLevel: tt.targetLevel,
+				baseOperations: baseOperations{pods: tt.pods},
+				targetLevel:    tt.targetLevel,
 			}
 
 			err := ops.validate()

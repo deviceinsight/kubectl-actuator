@@ -2,7 +2,6 @@ package cmd
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"os"
 	"sort"
@@ -10,32 +9,33 @@ import (
 	"time"
 
 	"github.com/deviceinsight/kubectl-actuator/internal/actuator"
-	"github.com/deviceinsight/kubectl-actuator/internal/k8s"
-	"github.com/liggitt/tabwriter"
 	"github.com/spf13/cobra"
 	"k8s.io/cli-runtime/pkg/genericclioptions"
 )
 
 const maxStatusMessageLength = 80
 
-type scheduledTasksOperations struct {
-	k8sCliFlags      *genericclioptions.ConfigFlags
-	k8sClient        k8s.Client
-	transportFactory k8s.TransportFactory
-	podResolver      PodResolver
-
-	pods     []string
+type scheduledTasksCommandOperations struct {
+	baseOperations
 	output   string
 	wideMode bool
 }
 
 func NewScheduledTasksCommand(configFlags *genericclioptions.ConfigFlags, podResolver PodResolver) *cobra.Command {
-	operations := &scheduledTasksOperations{k8sCliFlags: configFlags, podResolver: podResolver}
+	operations := &scheduledTasksCommandOperations{
+		baseOperations: baseOperations{
+			k8sCliFlags: configFlags,
+			podResolver: podResolver,
+		},
+	}
 
 	cmd := &cobra.Command{
 		Use:   "scheduled-tasks",
 		Short: "Show scheduled tasks",
-		Args:  cobra.NoArgs,
+		Long: `Show scheduled tasks from Spring Boot Actuator.
+
+Displays scheduled tasks configured in your application.`,
+		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if err := operations.complete(cmd); err != nil {
 				return err
@@ -43,7 +43,7 @@ func NewScheduledTasksCommand(configFlags *genericclioptions.ConfigFlags, podRes
 			if err := operations.validate(); err != nil {
 				return err
 			}
-			return operations.run(cmd.Context())
+			return RunForEachPod(cmd.Context(), operations.pods, "get scheduled tasks", operations.runForPod)
 		},
 	}
 
@@ -52,61 +52,25 @@ func NewScheduledTasksCommand(configFlags *genericclioptions.ConfigFlags, podRes
 	return cmd
 }
 
-func (o *scheduledTasksOperations) complete(cmd *cobra.Command) error {
-	connection, err := k8s.NewK8sConnection(o.k8sCliFlags)
-	if err != nil {
+func (o *scheduledTasksCommandOperations) complete(cmd *cobra.Command) error {
+	if err := o.baseOperations.complete(cmd); err != nil {
 		return err
 	}
-	o.k8sClient = connection
-	o.transportFactory = connection
 
-	pods, err := o.podResolver(cmd.Context(), connection, cmd)
-	if err != nil {
+	o.wideMode = o.output == OutputFormatWide
+
+	return nil
+}
+
+func (o *scheduledTasksCommandOperations) validate() error {
+	if err := o.validatePods(); err != nil {
 		return err
 	}
-	o.pods = pods
-
-	o.wideMode = o.output == "wide"
-	return nil
+	return validateOutputFormat(o.output, OutputFormatWide)
 }
 
-func (o *scheduledTasksOperations) validate() error {
-	if len(o.pods) == 0 {
-		return errors.New("No pods specified. Please specify at least one pod")
-	}
-	if o.output != "" && o.output != "wide" {
-		return fmt.Errorf("invalid output format %q. Supported formats: wide", o.output)
-	}
-	return nil
-}
-
-func (o *scheduledTasksOperations) run(ctx context.Context) error {
-	size := len(o.pods)
-	for i, pod := range o.pods {
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		default:
-		}
-
-		if size > 1 {
-			fmt.Printf("%s:\n", pod)
-		}
-
-		err := o.printScheduledForPod(ctx, pod)
-		if err != nil {
-			fmt.Printf("Error: %v\n", err)
-		}
-
-		if i != size-1 {
-			fmt.Println()
-		}
-	}
-	return nil
-}
-
-func (o *scheduledTasksOperations) printScheduledForPod(ctx context.Context, podName string) error {
-	client, err := actuator.NewActuatorClient(ctx, o.transportFactory, o.k8sClient, podName)
+func (o *scheduledTasksCommandOperations) runForPod(ctx context.Context, podName string) error {
+	client, err := o.actuatorClientFactory.NewClient(ctx, podName)
 	if err != nil {
 		return err
 	}
@@ -201,13 +165,14 @@ func formatTarget(target string, showFull bool) string {
 }
 
 func printRows(rows []tableRow) {
-	tw := tabwriter.NewWriter(os.Stdout, 6, 4, 3, ' ', 0)
-	_, _ = fmt.Fprintln(tw, "TYPE\tTARGET\tSCHEDULE\tNEXT\tLAST\tSTATUS")
+	w := newTableWriter()
+	defer func() { _ = w.Flush() }()
+
+	_, _ = fmt.Fprintln(w, "TYPE\tTARGET\tSCHEDULE\tNEXT\tLAST\tSTATUS")
 	for _, r := range rows {
-		_, _ = fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\n",
+		_, _ = fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\n",
 			r.Type, r.Target, r.Schedule, r.Next, r.Last, r.Status)
 	}
-	_ = tw.Flush()
 }
 
 func parseTime(s string) *time.Time {
@@ -231,9 +196,9 @@ func formatRelativeTime(ti *actuator.TimeOnly) string {
 	if t := parseTime(ti.Time); t != nil {
 		d := time.Until(*t)
 		if d >= 0 {
-			return "in " + friendlyDuration(d)
+			return "in " + formatDurationCompact(d)
 		}
-		return friendlyDuration(-d) + " ago"
+		return formatDurationCompact(-d) + " ago"
 	}
 	return ti.Time
 }
@@ -245,9 +210,9 @@ func formatRelativeTimeExec(ex *actuator.Execution) string {
 	if t := parseTime(ex.Time); t != nil {
 		d := time.Since(*t)
 		if d >= 0 {
-			return friendlyDuration(d) + " ago"
+			return formatDurationCompact(d) + " ago"
 		}
-		return "in " + friendlyDuration(-d)
+		return "in " + formatDurationCompact(-d)
 	}
 	return ex.Time
 }
@@ -277,27 +242,5 @@ func formatMs(ms int64) string {
 		return "0s"
 	}
 	d := time.Duration(ms) * time.Millisecond
-	return friendlyDuration(d)
-}
-
-func friendlyDuration(d time.Duration) string {
-	if d < 0 {
-		d = -d
-	}
-	secs := int64((d + time.Second/2) / time.Second)
-	h := secs / 3600
-	m := (secs % 3600) / 60
-	s := secs % 60
-
-	out := ""
-	if h > 0 {
-		out += fmt.Sprintf("%dh", h)
-	}
-	if m > 0 {
-		out += fmt.Sprintf("%dm", m)
-	}
-	if s > 0 || out == "" {
-		out += fmt.Sprintf("%ds", s)
-	}
-	return out
+	return formatDurationCompact(d)
 }

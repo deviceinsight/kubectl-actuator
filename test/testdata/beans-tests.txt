@@ -1,0 +1,60 @@
+-- test: beans list all --
+-- command --
+kubectl-actuator --pod {{pod}} beans
+-- expect:regex --
+NAME\s+TYPE\s+SCOPE\s+DEPENDENCIES
+-- expect --
+testScheduledTasks
+
+
+-- test: beans filter by pattern --
+-- command --
+kubectl-actuator --pod {{pod}} beans --filter testScheduled
+-- expect:regex --
+NAME\s+TYPE\s+SCOPE\s+DEPENDENCIES
+-- expect:regex --
+testScheduledTasks\s+c\.e\.t\.TestScheduledTasks\s+singleton
+-- expect:not --
+spring.mvc
+
+
+-- test: beans output name only --
+-- command --
+kubectl-actuator --pod {{pod}} beans --output name
+-- expect --
+testScheduledTasks
+-- expect --
+testActuatorApplication
+
+
+-- test: beans with no results --
+-- command --
+kubectl-actuator --pod {{pod}} beans --filter nonexistentbean12345
+-- expect --
+No beans matching filter: nonexistentbean12345
+
+
+-- test: beans output name with filter --
+-- command --
+kubectl-actuator --pod {{pod}} beans --filter testScheduled --output name
+-- expect --
+testScheduledTasks
+-- expect:not --
+testActuatorApplication
+
+
+-- test: beans output wide format --
+-- command --
+kubectl-actuator --pod {{pod}} beans --output wide --filter testScheduled
+-- expect --
+Context:
+-- expect --
+Beans:
+-- expect --
+Bean: testScheduledTasks
+-- expect --
+Type:
+-- expect --
+Scope: singleton
+-- expect:regex --
+(Resource:|Dependencies)

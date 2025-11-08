@@ -1,0 +1,72 @@
+-- test: beans with very long filter --
+-- command --
+kubectl-actuator --pod {{pod}} beans --filter org.springframework.boot.autoconfigure.web.servlet
+-- expect:regex --
+NAME\s+TYPE\s+SCOPE\s+DEPENDENCIES
+
+
+-- test: env filter with special characters --
+-- command --
+kubectl-actuator --pod {{pod}} env --filter spring.application
+-- expect --
+spring.application.name
+
+
+-- test: metrics filter empty results --
+-- command --
+kubectl-actuator --pod {{pod}} metrics --filter nonexistent.metric.filter.xyz
+-- expect:not --
+jvm.memory.used
+
+
+-- test: beans with empty output name only --
+-- command --
+kubectl-actuator --pod {{pod}} beans --output name --filter nonexistentpattern999
+-- expect:not --
+testScheduledTasks
+
+
+-- test: logger set and reset multiple times --
+-- command --
+kubectl-actuator --pod {{pod}} logger com.example.testapp DEBUG
+-- command --
+kubectl-actuator --pod {{pod}} logger
+-- expect:regex --
+com\.example\.testapp\s+DEBUG
+-- command --
+kubectl-actuator --pod {{pod}} logger com.example.testapp WARN
+-- command --
+kubectl-actuator --pod {{pod}} logger
+-- expect:regex --
+com\.example\.testapp\s+WARN
+-- command --
+kubectl-actuator --pod {{pod}} logger com.example.testapp INFO
+-- command --
+kubectl-actuator --pod {{pod}} logger
+-- expect:regex --
+com\.example\.testapp\s+INFO
+
+
+-- test: beans filter case sensitivity --
+-- command --
+kubectl-actuator --pod {{pod}} beans --filter testscheduled
+-- expect --
+testScheduledTasks
+
+
+-- test: raw endpoint with trailing slash --
+-- command --
+kubectl-actuator --pod {{pod}} raw /health/
+-- expect --
+"status"
+
+
+-- test: multi-pod with same pod twice --
+-- command --
+kubectl-actuator --pod {{pod[0]}} --pod {{pod[0]}} health
+-- expect --
+COMPONENT
+-- expect --
+STATUS
+-- expect --
+[overall]

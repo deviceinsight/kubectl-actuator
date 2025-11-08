@@ -65,12 +65,12 @@ func (c *Connection) ListPods(ctx context.Context, namespace, labelSelector stri
 		return nil, err
 	}
 
-	var foundResources []string
+	var podNames []string
 	for _, pod := range list.Items {
-		foundResources = append(foundResources, pod.Name)
+		podNames = append(podNames, pod.Name)
 	}
 
-	return foundResources, nil
+	return podNames, nil
 }
 
 func (c *Connection) ListDeployments(ctx context.Context, namespace string) ([]string, error) {
@@ -79,12 +79,12 @@ func (c *Connection) ListDeployments(ctx context.Context, namespace string) ([]s
 		return nil, err
 	}
 
-	var foundResources []string
+	var deploymentNames []string
 	for _, deployment := range list.Items {
-		foundResources = append(foundResources, deployment.Name)
+		deploymentNames = append(deploymentNames, deployment.Name)
 	}
 
-	return foundResources, nil
+	return deploymentNames, nil
 }
 
 func (c *Connection) GetDeploymentPods(ctx context.Context, namespace, deploymentName string) ([]string, error) {

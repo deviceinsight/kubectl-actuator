@@ -3,6 +3,7 @@ package actuator
 import (
 	"context"
 	"net/http"
+	"strings"
 	"testing"
 
 	"github.com/deviceinsight/kubectl-actuator/internal/k8s"
@@ -205,7 +206,7 @@ func TestNewActuatorClient(t *testing.T) {
 				shouldFail: tt.transportFails,
 			}
 
-			_, err := NewActuatorClient(ctx, transportFactory, k8sClient, podName)
+			_, err := NewActuatorClient(ctx, transportFactory, k8sClient, podName, 0, "")
 
 			if (err != nil) != tt.wantErr {
 				t.Errorf("NewActuatorClient() error = %v, wantErr %v", err, tt.wantErr)
@@ -213,7 +214,7 @@ func TestNewActuatorClient(t *testing.T) {
 			}
 
 			if tt.wantErr && tt.errContains != "" {
-				if err == nil || !contains(err.Error(), tt.errContains) {
+				if err == nil || !strings.Contains(err.Error(), tt.errContains) {
 					t.Errorf("expected error containing '%s', got '%v'", tt.errContains, err)
 				}
 			}
@@ -275,9 +276,9 @@ func TestEndpointError(t *testing.T) {
 			name:          "loggers endpoint 404",
 			endpoint:      "loggers",
 			status:        "404 Not Found",
-			messagePrefix: "Unable to get loggers",
+			messagePrefix: "failed to get loggers",
 			wantContains: []string{
-				"Unable to get loggers",
+				"failed to get loggers",
 				"404 Not Found",
 				"loggers",
 				"https://docs.spring.io",
@@ -287,9 +288,9 @@ func TestEndpointError(t *testing.T) {
 			name:          "scheduledtasks endpoint 500",
 			endpoint:      "scheduledtasks",
 			status:        "500 Internal Server Error",
-			messagePrefix: "Unable to get scheduled tasks",
+			messagePrefix: "failed to get scheduled tasks",
 			wantContains: []string{
-				"Unable to get scheduled tasks",
+				"failed to get scheduled tasks",
 				"500 Internal Server Error",
 				"scheduledtasks",
 				"https://docs.spring.io",
@@ -299,9 +300,9 @@ func TestEndpointError(t *testing.T) {
 			name:          "info endpoint 403",
 			endpoint:      "info",
 			status:        "403 Forbidden",
-			messagePrefix: "Failed to get info",
+			messagePrefix: "failed to get info",
 			wantContains: []string{
-				"Failed to get info",
+				"failed to get info",
 				"403 Forbidden",
 				"info",
 			},
@@ -314,7 +315,7 @@ func TestEndpointError(t *testing.T) {
 			errMsg := err.Error()
 
 			for _, want := range tt.wantContains {
-				if !contains(errMsg, want) {
+				if !strings.Contains(errMsg, want) {
 					t.Errorf("error message does not contain '%s'\nGot: %s", want, errMsg)
 				}
 			}
@@ -322,16 +323,157 @@ func TestEndpointError(t *testing.T) {
 	}
 }
 
-func contains(s, substr string) bool {
-	return len(s) >= len(substr) && (s == substr || len(substr) == 0 ||
-		(len(s) > 0 && len(substr) > 0 && stringContains(s, substr)))
+func TestResourceNotFoundError(t *testing.T) {
+	tests := []struct {
+		name         string
+		resourceType string
+		resourceName string
+		status       string
+		wantContains []string
+		wantExclude  []string
+	}{
+		{
+			name:         "metric not found",
+			resourceType: "metric",
+			resourceName: "nonexistent.metric",
+			status:       "404 Not Found",
+			wantContains: []string{
+				"metric",
+				"nonexistent.metric",
+				"not found",
+				"404 Not Found",
+			},
+			wantExclude: []string{
+				"https://docs.spring.io",
+				"endpoint is exposed",
+			},
+		},
+		{
+			name:         "property not found",
+			resourceType: "property",
+			resourceName: "nonexistent.property",
+			status:       "404 Not Found",
+			wantContains: []string{
+				"property",
+				"nonexistent.property",
+				"not found",
+				"404 Not Found",
+			},
+			wantExclude: []string{
+				"https://docs.spring.io",
+				"endpoint is exposed",
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := resourceNotFoundError(tt.resourceType, tt.resourceName, tt.status)
+			errMsg := err.Error()
+
+			for _, want := range tt.wantContains {
+				if !strings.Contains(errMsg, want) {
+					t.Errorf("error message does not contain '%s'\nGot: %s", want, errMsg)
+				}
+			}
+
+			for _, exclude := range tt.wantExclude {
+				if strings.Contains(errMsg, exclude) {
+					t.Errorf("error message should not contain '%s'\nGot: %s", exclude, errMsg)
+				}
+			}
+		})
+	}
 }
 
-func stringContains(s, substr string) bool {
-	for i := 0; i <= len(s)-len(substr); i++ {
-		if s[i:i+len(substr)] == substr {
-			return true
-		}
+func TestActuatorClientWithOverrides(t *testing.T) {
+	tests := []struct {
+		name             string
+		podAnnotations   map[string]string
+		portOverride     int
+		basePathOverride string
+		wantErr          bool
+	}{
+		{
+			name: "port override takes precedence over annotation",
+			podAnnotations: map[string]string{
+				"kubectl-actuator.device-insight.com/port": "9090",
+			},
+			portOverride:     8888,
+			basePathOverride: "",
+			wantErr:          false,
+		},
+		{
+			name: "basePath override takes precedence over annotation",
+			podAnnotations: map[string]string{
+				"kubectl-actuator.device-insight.com/basePath": "management",
+			},
+			portOverride:     0,
+			basePathOverride: "custom/path",
+			wantErr:          false,
+		},
+		{
+			name: "both overrides take precedence",
+			podAnnotations: map[string]string{
+				"kubectl-actuator.device-insight.com/port":     "9090",
+				"kubectl-actuator.device-insight.com/basePath": "management",
+			},
+			portOverride:     7777,
+			basePathOverride: "override/path",
+			wantErr:          false,
+		},
+		{
+			name:             "override with invalid port",
+			podAnnotations:   map[string]string{},
+			portOverride:     99999,
+			basePathOverride: "",
+			wantErr:          true,
+		},
+		{
+			name:             "override with valid edge case port 1",
+			podAnnotations:   map[string]string{},
+			portOverride:     1,
+			basePathOverride: "",
+			wantErr:          false,
+		},
+		{
+			name:             "override with valid edge case port 65535",
+			podAnnotations:   map[string]string{},
+			portOverride:     65535,
+			basePathOverride: "",
+			wantErr:          false,
+		},
 	}
-	return false
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ctx := context.Background()
+			podName := "test-pod"
+
+			pod := &corev1.Pod{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:        podName,
+					Namespace:   "default",
+					Annotations: tt.podAnnotations,
+				},
+			}
+
+			k8sClient := &mockK8sClient{
+				pods: map[string]*corev1.Pod{
+					podName: pod,
+				},
+				namespace: "default",
+			}
+
+			transportFactory := &mockTransportFactory{
+				shouldFail: false,
+			}
+
+			_, err := NewActuatorClient(ctx, transportFactory, k8sClient, podName, tt.portOverride, tt.basePathOverride)
+
+			if (err != nil) != tt.wantErr {
+				t.Errorf("NewActuatorClient() error = %v, wantErr %v", err, tt.wantErr)
+			}
+		})
+	}
 }

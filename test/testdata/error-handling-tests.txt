@@ -1,0 +1,21 @@
+-- test: error non-existent logger --
+-- command --
+kubectl-actuator --pod {{pod}} logger com.nonexistent.package DEBUG
+-- command --
+kubectl-actuator --pod {{pod}} logger
+-- expect --
+com.example.testapp
+
+
+-- test: error selector matched no pods --
+-- command --
+kubectl-actuator -l nonexistent=label health
+-- expect:error --
+selector nonexistent=label matched no pods
+
+
+-- test: error no pods selected --
+-- command --
+kubectl-actuator health
+-- expect:error --
+no pods selected: specify --pod, --deployment, or --selector

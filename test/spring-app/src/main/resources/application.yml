@@ -1,0 +1,34 @@
+spring:
+  application:
+    name: test-actuator-app
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: "*"
+      base-path: /actuator
+  endpoint:
+    env:
+      show-values: always
+    health:
+      show-details: always
+  info:
+    env:
+      enabled: true
+
+info:
+  build:
+    artifact: test-actuator-app
+    name: test-actuator-app
+    version: 1.0.0
+    group: com.example
+  app:
+    name: test-actuator-app
+    description: Test Spring Boot application with Actuator
+
+logging:
+  level:
+    root: INFO
+    com.example.testapp: INFO
+    org.springframework.web: INFO

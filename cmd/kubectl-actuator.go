@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"context"
+	"errors"
 	"os"
 	"os/signal"
 	"syscall"
@@ -17,6 +18,16 @@ var rootCmd = &cobra.Command{
 		cobra.CommandDisplayNameAnnotation: "kubectl actuator",
 	},
 	Short: "Control your Spring Boot applications via Actuator",
+	PersistentPreRunE: func(cmd *cobra.Command, args []string) error {
+		// Silence usage for subcommands after args are validated - runtime errors shouldn't show help
+		if cmd.HasParent() {
+			cmd.SilenceUsage = true
+		}
+		return nil
+	},
+	RunE: func(cmd *cobra.Command, args []string) error {
+		return errors.New("a subcommand is required")
+	},
 }
 
 func Execute() {
@@ -44,5 +55,6 @@ func PrintCompletion() {
 
 func init() {
 	rootCmd.CompletionOptions.DisableDefaultCmd = true
+	rootCmd.Version = cmd.Version
 	cmd.AddCommands(rootCmd)
 }

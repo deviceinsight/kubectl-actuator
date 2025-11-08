@@ -26,20 +26,20 @@ func TestInfoCommandValidation(t *testing.T) {
 			name:        "no pods specified",
 			pods:        []string{},
 			wantErr:     true,
-			errContains: "No pods specified",
+			errContains: "no pods selected",
 		},
 		{
 			name:        "nil pods",
 			pods:        nil,
 			wantErr:     true,
-			errContains: "No pods specified",
+			errContains: "no pods selected",
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			ops := &infoCommandOperations{
-				pods: tt.pods,
+				baseOperations: baseOperations{pods: tt.pods},
 			}
 
 			err := ops.validate()
@@ -60,7 +60,7 @@ func TestInfoCommandValidation(t *testing.T) {
 
 func TestInfoCommandErrorMessages(t *testing.T) {
 	ops := &infoCommandOperations{
-		pods: []string{},
+		baseOperations: baseOperations{pods: []string{}},
 	}
 
 	err := ops.validate()
@@ -71,8 +71,10 @@ func TestInfoCommandErrorMessages(t *testing.T) {
 
 	errMsg := err.Error()
 	expectedPhrases := []string{
-		"No pods specified",
-		"Please specify",
+		"no pods selected",
+		"--pod",
+		"--deployment",
+		"--selector",
 	}
 
 	for _, phrase := range expectedPhrases {
@@ -103,7 +105,7 @@ func TestInfoCommandWithDifferentPodCounts(t *testing.T) {
 			}
 
 			ops := &infoCommandOperations{
-				pods: pods,
+				baseOperations: baseOperations{pods: pods},
 			}
 
 			err := ops.validate()

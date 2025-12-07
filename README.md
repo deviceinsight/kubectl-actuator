@@ -2,17 +2,6 @@
 
 A kubectl plugin for interacting with Spring Boot Actuator endpoints.
 
-## Features
-
-- **Logger Management**: List all loggers and dynamically change log levels at runtime
-- **Scheduled Tasks Monitoring**: View scheduled tasks with execution status, timing, and schedules
-- **Application Info**: View application build and runtime information
-- **Health Status**: Check application health and component status
-- **Metrics**: View and filter application metrics (JVM, HTTP, custom metrics)
-- **Environment**: Inspect environment properties and configuration
-- **Thread Dump**: Analyze thread states and detect potential issues
-- **Beans**: View Spring bean registry and dependencies
-
 ## Installation
 
 Make sure you have [krew](https://krew.sigs.k8s.io/) installed.
@@ -22,7 +11,7 @@ Make sure you have [krew](https://krew.sigs.k8s.io/) installed.
 kubectl krew install actuator
 
 # Enable shell completion (optional)
-ln -sr ~/.krew/bin/kubectl-actuator ~/.krew/bin/kubectl_complete-actuator
+ln -s ~/.krew/bin/kubectl-actuator ~/.krew/bin/kubectl_complete-actuator
 ```
 
 ## Configuration
@@ -31,20 +20,15 @@ ln -sr ~/.krew/bin/kubectl-actuator ~/.krew/bin/kubectl_complete-actuator
 
 By default, the plugin expects Spring Boot Actuator on `http://localhost:8080/actuator`. You can customize this in two ways:
 
-#### Command-line Flags (highest priority)
+#### Command-line Flags
 
-- `--port <port>`: Override actuator port
-- `--base-path <path>`: Override actuator base path
-
-Example:
-```bash
-kubectl actuator --pod my-app-pod --port 9090 --base-path management/actuator logger
-```
+- `--port <port>`: Actuator port (default: `8080`)
+- `--base-path <path>`: Actuator base path (default: `actuator`)
 
 #### Pod Annotations
 
-- `kubectl-actuator.device-insight.com/port`: Actuator port (default: `8080`)
-- `kubectl-actuator.device-insight.com/basePath`: Actuator base path (default: `actuator`)
+- `kubectl-actuator.device-insight.com/port`: Actuator port
+- `kubectl-actuator.device-insight.com/basePath`: Actuator base path
 
 **Note:** Command-line flags take precedence over pod annotations, which take precedence over defaults.
 
@@ -58,18 +42,9 @@ All commands support target selection:
 - `--deployment <deployment-name>` or `-d`: Target all pods in a deployment
 - `--selector <label-selector>` or `-l`: Target pods by label selector (e.g., `app=myapp,env=prod`)
 
-Actuator configuration:
-
-- `--port <port>`: Override actuator port (default: read from pod annotation or `8080`)
-- `--base-path <path>`: Override actuator base path (default: read from pod annotation or `actuator`)
-
-Standard kubectl flags such as `--namespace` or `--context` are also supported.
-
 ### Loggers
 
 #### List all loggers
-
-View current logger configuration:
 
 ```bash
 ❯ kubectl actuator --pod my-app-pod logger
@@ -84,8 +59,6 @@ org.springframework.web                              INFO
 
 #### Set logger level
 
-Change a logger's level at runtime:
-
 ```bash
 # Set a specific logger to DEBUG
 ❯ kubectl actuator --pod my-app-pod logger com.example.app.service DEBUG
@@ -94,27 +67,9 @@ Change a logger's level at runtime:
 ❯ kubectl actuator --pod my-app-pod logger ROOT WARN
 ```
 
-**Available log levels**: TRACE, DEBUG, INFO, WARN, ERROR, FATAL, OFF, RESET
-
 **Note:** Use `RESET` to clear a configured level and inherit from the parent logger.
 
-#### Show all loggers
-
-By default, only loggers with explicitly configured levels are shown. Use `--all-loggers` to see all loggers including those inheriting their level:
-
-```bash
-❯ kubectl actuator --pod my-app-pod logger --all-loggers
-LOGGER                                               LEVEL
-ROOT                                                 INFO
-com                                                  INFO (effective)
-com.example                                          INFO (effective)
-com.example.app                                      DEBUG
-com.example.app.service                              DEBUG (effective)
-```
-
 ### Scheduled Tasks
-
-View scheduled tasks with execution details:
 
 ```bash
 ❯ kubectl actuator --deployment my-app scheduled-tasks
@@ -127,11 +82,9 @@ fixedDelay   StatusWatcher.checkStatus               fixedDelay=5s              
 fixedRate    UpdateService.checkForUpdates           fixedRate=30m                      in 14m33s       15m27s ago   SUCCESS
 ```
 
-**Note:** Execution tracking (NEXT, LAST, STATUS columns) requires Spring Boot 3.4.0 or later. Earlier versions will only show task type, target, and schedule information.
+**Note:** Execution tracking (NEXT, LAST, STATUS columns) requires Spring Boot 3.4.0 or later.
 
 ### Application Info
-
-View application build and runtime information:
 
 ```bash
 ❯ kubectl actuator --pod my-app-pod info
@@ -155,8 +108,6 @@ Kubernetes:
 ```
 
 ### Health
-
-Check application health status and component health:
 
 ```bash
 ❯ kubectl actuator --pod my-app-pod health
@@ -183,8 +134,6 @@ ssl             UP      {"validChains":[],"invalidChains":[]}
 ```
 
 ### Metrics
-
-View application metrics:
 
 ```bash
 # List all available metrics
@@ -220,10 +169,8 @@ id    CodeHeap 'profiled nmethods', G1 Old Gen, ...
 
 ### Environment
 
-Inspect environment properties and configuration:
-
 ```bash
-# View all environment properties (shows active profiles and all properties)
+# View all environment properties
 ❯ kubectl actuator --pod my-app-pod env
 
 # Filter properties by name pattern
@@ -240,14 +187,7 @@ spring.application.pid
 spring.application.name
 ```
 
-**Note:** To get the raw JSON response from the `/actuator/env` endpoint, use:
-```bash
-❯ kubectl actuator --pod my-app-pod raw env
-```
-
 ### Thread Dump
-
-Analyze application threads:
 
 ```bash
 # Get full thread dump
@@ -282,8 +222,6 @@ Thread #1: main (ID: 1)
 
 ### Beans
 
-View Spring application beans:
-
 ```bash
 # List all beans in table format (default)
 ❯ kubectl actuator --pod my-app-pod beans
@@ -312,18 +250,9 @@ Bean: userController
     - userService
     - validationService
     - objectMapper
-
-# List only bean names with -o name
-❯ kubectl actuator --pod my-app-pod beans -o name
-userController
-userService
-dataSource
-...
 ```
 
 ### Raw Endpoint Access
-
-Access any actuator endpoint and get raw JSON output:
 
 ```bash
 # Get raw JSON from any endpoint
@@ -345,49 +274,6 @@ Access any actuator endpoint and get raw JSON output:
 ❯ kubectl actuator --pod my-app-pod raw mappings
 ❯ kubectl actuator --pod my-app-pod raw configprops
 ❯ kubectl actuator --pod my-app-pod raw conditions
-```
-
-### Multi-Target Operations
-
-#### Target multiple pods
-
-```bash
-# Target specific pods
-❯ kubectl actuator --pod app-pod-1 --pod app-pod-2 logger
-
-app-pod-1:
-LOGGER                    LEVEL
-ROOT                      INFO
-com.example.app           DEBUG
-
-app-pod-2:
-LOGGER                    LEVEL
-ROOT                      INFO
-com.example.app           DEBUG
-```
-
-#### Target deployments
-
-Automatically targets all pods from the deployment's selector:
-
-```bash
-# Target all pods in a deployment
-❯ kubectl actuator --deployment my-app logger
-
-# Target multiple deployments
-❯ kubectl actuator --deployment app-1 --deployment app-2 scheduled-tasks
-```
-
-#### Target by label selector
-
-Use standard Kubernetes label selectors to target pods:
-
-```bash
-# Target pods by label
-❯ kubectl actuator --selector app.kubernetes.io/component=backend logger
-
-# Combine with other target options
-❯ kubectl actuator --selector app.kubernetes.io/component=backend --deployment frontend-app logger
 ```
 
 ## Building from Source

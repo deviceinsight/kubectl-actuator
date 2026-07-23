@@ -1,0 +1,103 @@
+-- test: completion suggests pod names --
+-- command --
+kubectl-actuator __complete --pod ""
+-- expect --
+{{pod[0]}}
+-- expect --
+{{pod[1]}}
+
+
+-- test: completion suggests deployment names --
+-- command --
+kubectl-actuator __complete --deployment ""
+-- expect --
+{{deployment}}
+
+
+-- test: completion suggests logger names --
+-- command --
+kubectl-actuator __complete --pod {{pod}} logger ""
+-- expect --
+ROOT
+-- expect --
+com.example.testapp
+
+
+-- test: completion suggests log levels --
+-- command --
+kubectl-actuator __complete --pod {{pod}} logger ROOT ""
+-- expect --
+DEBUG
+-- expect --
+TRACE
+-- expect --
+RESET
+
+
+-- test: completion suggests raw endpoints --
+-- command --
+kubectl-actuator __complete --pod {{pod}} raw ""
+-- expect --
+health
+-- expect --
+loggers
+-- expect --
+metrics
+
+
+-- test: completion suggests metric names --
+-- command --
+kubectl-actuator __complete --pod {{pod}} metrics ""
+-- expect --
+jvm.memory.used
+-- expect --
+process.uptime
+
+
+-- test: completion suggests output formats not files --
+-- command --
+kubectl-actuator __complete health -o ""
+-- expect:stdout --
+wide
+-- expect:stdout --
+json
+-- expect:stdout --
+yaml
+-- expect:stdout --
+:4
+
+
+-- test: completion suggests thread states not files --
+-- command --
+kubectl-actuator __complete threaddump --state ""
+-- expect:stdout --
+BLOCKED
+-- expect:stdout --
+RUNNABLE
+-- expect:stdout --
+:4
+
+
+-- test: completion suggests env property names --
+-- command --
+kubectl-actuator __complete --pod {{pod}} env ""
+-- expect:stdout --
+spring.application.name
+-- expect:stdout --
+:4
+
+
+-- test: completion suggests namespaces --
+-- command --
+kubectl-actuator __complete --namespace ""
+-- expect:stdout --
+{{namespace}}
+-- expect:stdout --
+kube-system
+
+
+-- test: completion of a no-args positional stays silent --
+-- command --
+kubectl-actuator __complete info ""
+-- expect:stdout --
+:4

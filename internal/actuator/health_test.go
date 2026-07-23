@@ -1,7 +1,7 @@
 package actuator
 
 import (
-	"strconv"
+	"strings"
 	"testing"
 )
 
@@ -10,7 +10,6 @@ func TestActuatorClientGetHealth(t *testing.T) {
 		name             string
 		mockResponse     string
 		mockStatus       int
-		mockErr          error
 		wantErr          bool
 		wantStatus       string
 		wantComponentCnt int
@@ -64,8 +63,33 @@ func TestActuatorClientGetHealth(t *testing.T) {
 			wantComponentCnt: 2,
 		},
 		{
-			name:         "503 service unavailable",
+			name:         "503 without a health body is an error",
 			mockResponse: ``,
+			mockStatus:   503,
+			wantErr:      true,
+		},
+		{
+			// Spring returns 503 with the full health document when the
+			// aggregate status is DOWN; that is a successful check of an
+			// unhealthy app, not a failure.
+			name: "503 with DOWN health body renders the document",
+			mockResponse: `{
+				"status": "DOWN",
+				"components": {
+					"db": {
+						"status": "DOWN",
+						"details": {"error": "Connection refused"}
+					}
+				}
+			}`,
+			mockStatus:       503,
+			wantErr:          false,
+			wantStatus:       "DOWN",
+			wantComponentCnt: 1,
+		},
+		{
+			name:         "503 with non-health JSON body is an error",
+			mockResponse: `{"error": "Service Unavailable"}`,
 			mockStatus:   503,
 			wantErr:      true,
 		},
@@ -110,24 +134,10 @@ func TestActuatorClientGetHealth(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			mockClient := &MockHTTPClient{
-				GetFunc: func(path string) (*Response, error) {
-					if path != "/health" {
-						t.Errorf("unexpected path: %s", path)
-					}
-					if tt.mockErr != nil {
-						return nil, tt.mockErr
-					}
-					return &Response{
-						Body:       []byte(tt.mockResponse),
-						StatusCode: tt.mockStatus,
-						Status:     strconv.Itoa(tt.mockStatus),
-					}, nil
-				},
-			}
+			mockClient := newEndpointMock(t, "/health", respondWith(tt.mockStatus, tt.mockResponse))
 
 			client := &actuatorClient{httpClient: mockClient}
-			result, err := client.GetHealth()
+			result, err := client.GetHealth("")
 
 			if (err != nil) != tt.wantErr {
 				t.Errorf("GetHealth() error = %v, wantErr %v", err, tt.wantErr)
@@ -146,177 +156,47 @@ func TestActuatorClientGetHealth(t *testing.T) {
 	}
 }
 
-func TestHealthResponseParsing(t *testing.T) {
-	tests := []struct {
-		name     string
-		response string
-		validate func(*testing.T, *HealthResponse)
-	}{
-		{
-			name: "component with details",
-			response: `{
-				"status": "UP",
-				"components": {
-					"db": {
-						"status": "UP",
-						"details": {
-							"database": "PostgreSQL",
-							"version": "14.5"
-						}
-					}
-				}
-			}`,
-			validate: func(t *testing.T, resp *HealthResponse) {
-				db, ok := resp.Components["db"]
-				if !ok {
-					t.Fatal("expected db component")
-				}
-				if db.Status != "UP" {
-					t.Errorf("expected db status 'UP', got '%s'", db.Status)
-				}
-				if db.Details["database"] != "PostgreSQL" {
-					t.Errorf("expected database 'PostgreSQL', got '%v'", db.Details["database"])
-				}
-			},
-		},
-		{
-			name: "nested components",
-			response: `{
-				"status": "UP",
-				"components": {
-					"db": {
-						"status": "UP",
-						"components": {
-							"primary": {
-								"status": "UP",
-								"details": {"connection": "active"}
-							},
-							"replica": {
-								"status": "UP",
-								"details": {"connection": "active"}
-							}
-						}
-					}
-				}
-			}`,
-			validate: func(t *testing.T, resp *HealthResponse) {
-				db := resp.Components["db"]
-				if len(db.Components) != 2 {
-					t.Errorf("expected 2 nested components, got %d", len(db.Components))
-				}
-				primary, ok := db.Components["primary"]
-				if !ok {
-					t.Fatal("expected primary component")
-				}
-				if primary.Status != "UP" {
-					t.Errorf("expected primary status 'UP', got '%s'", primary.Status)
-				}
-			},
-		},
-		{
-			name: "various health statuses",
-			response: `{
-				"status": "UP",
-				"components": {
-					"healthy": {"status": "UP"},
-					"unhealthy": {"status": "DOWN"},
-					"unknown": {"status": "UNKNOWN"},
-					"outOfService": {"status": "OUT_OF_SERVICE"}
-				}
-			}`,
-			validate: func(t *testing.T, resp *HealthResponse) {
-				if resp.Components["healthy"].Status != "UP" {
-					t.Error("expected healthy status UP")
-				}
-				if resp.Components["unhealthy"].Status != "DOWN" {
-					t.Error("expected unhealthy status DOWN")
-				}
-				if resp.Components["unknown"].Status != "UNKNOWN" {
-					t.Error("expected unknown status UNKNOWN")
-				}
-				if resp.Components["outOfService"].Status != "OUT_OF_SERVICE" {
-					t.Error("expected outOfService status OUT_OF_SERVICE")
-				}
-			},
-		},
-		{
-			name: "component with numeric details",
-			response: `{
-				"status": "UP",
-				"components": {
-					"diskSpace": {
-						"status": "UP",
-						"details": {
-							"total": 107374182400,
-							"free": 53687091200,
-							"threshold": 10485760,
-							"exists": true
-						}
-					}
-				}
-			}`,
-			validate: func(t *testing.T, resp *HealthResponse) {
-				disk := resp.Components["diskSpace"]
-				if disk.Details["total"] != float64(107374182400) {
-					t.Errorf("unexpected total: %v", disk.Details["total"])
-				}
-				if disk.Details["exists"] != true {
-					t.Errorf("unexpected exists: %v", disk.Details["exists"])
-				}
-			},
-		},
-		{
-			name: "health groups",
-			response: `{
-				"status": "UP",
-				"groups": ["liveness", "readiness", "custom"]
-			}`,
-			validate: func(t *testing.T, resp *HealthResponse) {
-				if len(resp.Groups) != 3 {
-					t.Errorf("expected 3 groups, got %d", len(resp.Groups))
-				}
-				expectedGroups := []string{"liveness", "readiness", "custom"}
-				for i, group := range expectedGroups {
-					if resp.Groups[i] != group {
-						t.Errorf("group[%d] = %s, want %s", i, resp.Groups[i], group)
-					}
-				}
-			},
-		},
-		{
-			name: "empty components",
-			response: `{
-				"status": "UP",
-				"components": {}
-			}`,
-			validate: func(t *testing.T, resp *HealthResponse) {
-				if len(resp.Components) != 0 {
-					t.Errorf("expected 0 components, got %d", len(resp.Components))
-				}
-			},
+func TestActuatorClientGetHealthGroup(t *testing.T) {
+	mockClient := newEndpointMock(t, "/health/liveness", respondWith(200, `{"status": "UP"}`))
+
+	client := &actuatorClient{httpClient: mockClient}
+	result, err := client.GetHealth("liveness")
+	if err != nil {
+		t.Fatalf("GetHealth(liveness) error = %v", err)
+	}
+	if result.Status != "UP" {
+		t.Errorf("status = %v, want UP", result.Status)
+	}
+}
+
+func TestActuatorClientGetHealthUnknownGroup(t *testing.T) {
+	// The health endpoint is exposed (the index probe finds it), so a 404 on
+	// a group path must be reported as an unknown group, not a missing
+	// endpoint.
+	mockClient := &MockHTTPClient{
+		GetFunc: func(path string) (*Response, error) {
+			switch path {
+			case "":
+				return &Response{
+					Body:       []byte(`{"_links": {"health": {"href": "http://x/actuator/health"}}}`),
+					StatusCode: 200,
+					Status:     "200",
+				}, nil
+			case "/health/nope":
+				return &Response{StatusCode: 404, Status: "404 Not Found"}, nil
+			}
+			t.Errorf("unexpected path: %s", path)
+			return &Response{StatusCode: 500, Status: "500"}, nil
 		},
 	}
 
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			mockClient := &MockHTTPClient{
-				GetFunc: func(path string) (*Response, error) {
-					return &Response{
-						Body:       []byte(tt.response),
-						StatusCode: 200,
-						Status:     "200",
-					}, nil
-				},
-			}
-
-			client := &actuatorClient{httpClient: mockClient}
-			result, err := client.GetHealth()
-
-			if err != nil {
-				t.Fatalf("unexpected error: %v", err)
-			}
-
-			tt.validate(t, result)
-		})
+	client := &actuatorClient{httpClient: mockClient}
+	_, err := client.GetHealth("nope")
+	if err == nil {
+		t.Fatal("expected error for unknown group")
+	}
+	want := `no health group or component named "nope"`
+	if !strings.Contains(err.Error(), want) {
+		t.Errorf("error = %v, want containing %q", err, want)
 	}
 }

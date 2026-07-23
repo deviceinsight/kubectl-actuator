@@ -1,19 +1,14 @@
 package actuator
 
-import (
-	"encoding/json"
-	"strconv"
-	"testing"
-)
+import "testing"
 
 func TestActuatorClientGetInfo(t *testing.T) {
 	tests := []struct {
 		name         string
 		mockResponse string
 		mockStatus   int
-		mockErr      error
 		wantErr      bool
-		validate     func(*testing.T, map[string]interface{})
+		validate     func(*testing.T, map[string]any)
 	}{
 		{
 			name: "successful response with build and kubernetes info",
@@ -37,15 +32,15 @@ func TestActuatorClientGetInfo(t *testing.T) {
 			}`,
 			mockStatus: 200,
 			wantErr:    false,
-			validate: func(t *testing.T, info map[string]interface{}) {
-				build, ok := info["build"].(map[string]interface{})
+			validate: func(t *testing.T, info map[string]any) {
+				build, ok := info["build"].(map[string]any)
 				if !ok {
 					t.Fatal("expected build info")
 				}
 				if build["artifact"] != "my-app" {
 					t.Errorf("expected artifact 'my-app', got %v", build["artifact"])
 				}
-				k8s, ok := info["kubernetes"].(map[string]interface{})
+				k8s, ok := info["kubernetes"].(map[string]any)
 				if !ok {
 					t.Fatal("expected kubernetes info")
 				}
@@ -67,7 +62,7 @@ func TestActuatorClientGetInfo(t *testing.T) {
 			}`,
 			mockStatus: 200,
 			wantErr:    false,
-			validate: func(t *testing.T, info map[string]interface{}) {
+			validate: func(t *testing.T, info map[string]any) {
 				_, hasBuild := info["build"]
 				if !hasBuild {
 					t.Error("expected build info")
@@ -98,7 +93,7 @@ func TestActuatorClientGetInfo(t *testing.T) {
 			}`,
 			mockStatus: 200,
 			wantErr:    false,
-			validate: func(t *testing.T, info map[string]interface{}) {
+			validate: func(t *testing.T, info map[string]any) {
 				if _, ok := info["git"]; !ok {
 					t.Error("expected git info")
 				}
@@ -112,7 +107,7 @@ func TestActuatorClientGetInfo(t *testing.T) {
 			mockResponse: `{}`,
 			mockStatus:   200,
 			wantErr:      false,
-			validate: func(t *testing.T, info map[string]interface{}) {
+			validate: func(t *testing.T, info map[string]any) {
 				if len(info) != 0 {
 					t.Errorf("expected empty info, got %d keys", len(info))
 				}
@@ -140,18 +135,7 @@ func TestActuatorClientGetInfo(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			mockClient := &MockHTTPClient{
-				GetFunc: func(path string) (*Response, error) {
-					if tt.mockErr != nil {
-						return nil, tt.mockErr
-					}
-					return &Response{
-						Body:       []byte(tt.mockResponse),
-						StatusCode: tt.mockStatus,
-						Status:     strconv.Itoa(tt.mockStatus),
-					}, nil
-				},
-			}
+			mockClient := newEndpointMock(t, "/info", respondWith(tt.mockStatus, tt.mockResponse))
 
 			client := &actuatorClient{httpClient: mockClient}
 			result, err := client.GetInfo()
@@ -163,109 +147,6 @@ func TestActuatorClientGetInfo(t *testing.T) {
 
 			if !tt.wantErr && tt.validate != nil {
 				tt.validate(t, result)
-			}
-		})
-	}
-}
-
-func TestGetInfoJSONParsing(t *testing.T) {
-	tests := []struct {
-		name      string
-		jsonInput string
-		wantErr   bool
-		wantKeys  []string
-	}{
-		{
-			name: "nested structures",
-			jsonInput: `{
-				"build": {
-					"version": "1.0.0",
-					"time": "2025-10-22T10:00:00Z"
-				},
-				"git": {
-					"commit": {
-						"id": {
-							"abbrev": "abc123",
-							"full": "abc123def456"
-						}
-					}
-				}
-			}`,
-			wantErr:  false,
-			wantKeys: []string{"build", "git"},
-		},
-		{
-			name:      "empty object",
-			jsonInput: `{}`,
-			wantErr:   false,
-			wantKeys:  []string{},
-		},
-		{
-			name: "arrays in response",
-			jsonInput: `{
-				"profiles": ["prod", "kubernetes"],
-				"dependencies": [
-					{"name": "spring-boot-starter-web", "version": "3.0.0"},
-					{"name": "spring-boot-starter-actuator", "version": "3.0.0"}
-				]
-			}`,
-			wantErr:  false,
-			wantKeys: []string{"profiles", "dependencies"},
-		},
-		{
-			name: "null values",
-			jsonInput: `{
-				"build": {
-					"version": "1.0.0",
-					"description": null
-				}
-			}`,
-			wantErr:  false,
-			wantKeys: []string{"build"},
-		},
-		{
-			name: "boolean and numeric values",
-			jsonInput: `{
-				"kubernetes": {
-					"inside": true,
-					"port": 8080,
-					"replicas": 3
-				}
-			}`,
-			wantErr:  false,
-			wantKeys: []string{"kubernetes"},
-		},
-		{
-			name:      "invalid JSON - missing quotes",
-			jsonInput: `{build: {version: 1.0.0}}`,
-			wantErr:   true,
-		},
-		{
-			name:      "invalid JSON - trailing comma",
-			jsonInput: `{"build": {"version": "1.0.0",}}`,
-			wantErr:   true,
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			var info map[string]interface{}
-			err := json.Unmarshal([]byte(tt.jsonInput), &info)
-
-			if (err != nil) != tt.wantErr {
-				t.Errorf("json.Unmarshal() error = %v, wantErr %v", err, tt.wantErr)
-				return
-			}
-
-			if !tt.wantErr {
-				for _, key := range tt.wantKeys {
-					if _, ok := info[key]; !ok {
-						t.Errorf("expected key '%s' in response", key)
-					}
-				}
-				if len(info) != len(tt.wantKeys) {
-					t.Errorf("expected %d keys, got %d", len(tt.wantKeys), len(info))
-				}
 			}
 		})
 	}

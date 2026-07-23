@@ -2,7 +2,9 @@ package cmd
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"os"
 	"sort"
 	"strings"
 
@@ -38,37 +40,76 @@ func NewBeansCommand(configFlags *genericclioptions.ConfigFlags, podResolver Pod
 
 Displays information about all Spring beans in the application context,
 including their scope, type, and dependencies.`,
-		Args: cobra.NoArgs,
+		Example: `  # List all beans of a deployment's pods
+  kubectl actuator -d my-app beans
+
+  # Show beans whose name contains 'service', with full details
+  kubectl actuator -d my-app beans -f service -o wide
+
+  # List matching bean names only
+  kubectl actuator -d my-app beans -f repository -o name`,
+		Args:              cobra.NoArgs,
+		ValidArgsFunction: cobra.NoFileCompletions,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			if err := operations.complete(cmd); err != nil {
+			if err := operations.validateFlags(); err != nil {
 				return err
 			}
-			if err := operations.validate(); err != nil {
-				return err
-			}
-			return RunForEachPod(cmd.Context(), operations.pods, "get beans", operations.runForPod)
+			return operations.runEndpoint(cmd, "get beans", operations.output, operations.structuredForPod, operations.runForPod)
 		},
 	}
 
-	cmd.Flags().StringVarP(&operations.filter, "filter", "f", "", "Filter beans by name pattern")
-	cmd.Flags().StringVarP(&operations.output, "output", "o", "", "Output format. One of: wide, name")
+	cmd.Flags().StringVarP(&operations.filter, "filter", "f", "", "Filter beans by name (case-insensitive substring)")
+	addOutputFlag(cmd, &operations.output, "", OutputFormatWide, OutputFormatName, OutputFormatJSON, OutputFormatYAML)
+	markNoFileFlags(cmd, "filter")
 
 	return cmd
 }
 
-func (o *beansCommandOperations) validate() error {
-	if err := o.validatePods(); err != nil {
-		return err
-	}
-	return validateOutputFormat(o.output, OutputFormatWide, OutputFormatName)
+func (o *beansCommandOperations) validateFlags() error {
+	return validateOutputFormat(o.output, OutputFormatWide, OutputFormatName, OutputFormatJSON, OutputFormatYAML)
 }
 
-func (o *beansCommandOperations) runForPod(ctx context.Context, podName string) error {
-	client, err := o.actuatorClientFactory.NewClient(ctx, podName)
+func (o *beansCommandOperations) structuredForPod(client actuator.Client) (json.RawMessage, error) {
+	data, err := client.GetRaw("beans")
 	if err != nil {
-		return err
+		return nil, err
 	}
+	return filterBeansJSON(data, o.filter)
+}
 
+// filterBeansJSON applies the bean name filter to the raw /beans response,
+// keeping the contexts/beans nesting and all other fields intact.
+func filterBeansJSON(data json.RawMessage, filter string) (json.RawMessage, error) {
+	if filter == "" {
+		return data, nil
+	}
+	tree, err := decodeTree(data)
+	if err != nil {
+		return nil, err
+	}
+	contexts, ok := tree["contexts"].(map[string]any)
+	if !ok {
+		return data, nil
+	}
+	for _, contextValue := range contexts {
+		contextMap, ok := contextValue.(map[string]any)
+		if !ok {
+			continue
+		}
+		beans, ok := contextMap["beans"].(map[string]any)
+		if !ok {
+			continue
+		}
+		for name := range beans {
+			if !matchesFilter(name, filter) {
+				delete(beans, name)
+			}
+		}
+	}
+	return encodeTree(tree)
+}
+
+func (o *beansCommandOperations) runForPod(ctx context.Context, client actuator.Client, podName string) error {
 	beansResponse, err := client.GetBeans()
 	if err != nil {
 		return err
@@ -84,14 +125,29 @@ func (o *beansCommandOperations) runForPod(ctx context.Context, podName string) 
 	}
 }
 
+// printNoBeansMatch reports an empty result on stderr, keeping stdout clean
+// for pipes.
+func printNoBeansMatch(filter string) {
+	if filter != "" {
+		_, _ = fmt.Fprintf(os.Stderr, "No beans match filter %q\n", filter)
+	} else {
+		_, _ = fmt.Fprintln(os.Stderr, "No beans found")
+	}
+}
+
 func displayBeansNames(beansResponse *actuator.BeansResponse, filter string) error {
 	var beanNames []string
 	for _, appCtx := range beansResponse.Contexts {
 		for beanName := range appCtx.Beans {
-			if filter == "" || strings.Contains(strings.ToLower(beanName), strings.ToLower(filter)) {
+			if matchesFilter(beanName, filter) {
 				beanNames = append(beanNames, beanName)
 			}
 		}
+	}
+
+	if len(beanNames) == 0 {
+		printNoBeansMatch(filter)
+		return nil
 	}
 
 	sort.Strings(beanNames)
@@ -100,19 +156,23 @@ func displayBeansNames(beansResponse *actuator.BeansResponse, filter string) err
 		fmt.Println(beanName)
 	}
 
-	if filter != "" {
-		fmt.Printf("\nTotal matching beans: %d\n", len(beanNames))
-	}
-
 	return nil
 }
 
 func displayBeansWide(beansResponse *actuator.BeansResponse, filter string) error {
-	for contextName, appCtx := range beansResponse.Contexts {
+	contextNames := make([]string, 0, len(beansResponse.Contexts))
+	for contextName := range beansResponse.Contexts {
+		contextNames = append(contextNames, contextName)
+	}
+	sort.Strings(contextNames)
+
+	matchedAny := false
+	for _, contextName := range contextNames {
+		appCtx := beansResponse.Contexts[contextName]
 		matchingBeans := make(map[string]actuator.Bean)
 
 		for beanName, bean := range appCtx.Beans {
-			if filter == "" || strings.Contains(strings.ToLower(beanName), strings.ToLower(filter)) {
+			if matchesFilter(beanName, filter) {
 				matchingBeans[beanName] = bean
 			}
 		}
@@ -120,6 +180,7 @@ func displayBeansWide(beansResponse *actuator.BeansResponse, filter string) erro
 		if len(matchingBeans) == 0 {
 			continue
 		}
+		matchedAny = true
 
 		fmt.Printf("Context: %s\n", contextName)
 		fmt.Printf("Beans: %d\n\n", len(matchingBeans))
@@ -134,7 +195,7 @@ func displayBeansWide(beansResponse *actuator.BeansResponse, filter string) erro
 			bean := matchingBeans[beanName]
 			fmt.Printf("Bean: %s\n", beanName)
 			if len(bean.Aliases) > 0 {
-				fmt.Printf("  Aliases: %v\n", bean.Aliases)
+				fmt.Printf("  Aliases: %s\n", strings.Join(bean.Aliases, ", "))
 			}
 			fmt.Printf("  Type: %s\n", bean.Type)
 			if bean.Scope != "" {
@@ -160,6 +221,10 @@ func displayBeansWide(beansResponse *actuator.BeansResponse, filter string) erro
 		}
 	}
 
+	if !matchedAny {
+		printNoBeansMatch(filter)
+	}
+
 	return nil
 }
 
@@ -173,7 +238,7 @@ func displayBeansTable(beansResponse *actuator.BeansResponse, filter string) err
 
 	for contextName, appCtx := range beansResponse.Contexts {
 		for beanName, bean := range appCtx.Beans {
-			if filter == "" || strings.Contains(strings.ToLower(beanName), strings.ToLower(filter)) {
+			if matchesFilter(beanName, filter) {
 				allBeans = append(allBeans, beanInfo{
 					name:    beanName,
 					context: contextName,
@@ -184,11 +249,7 @@ func displayBeansTable(beansResponse *actuator.BeansResponse, filter string) err
 	}
 
 	if len(allBeans) == 0 {
-		if filter != "" {
-			fmt.Printf("No beans matching filter: %s\n", filter)
-		} else {
-			fmt.Println("No beans found")
-		}
+		printNoBeansMatch(filter)
 		return nil
 	}
 
@@ -217,53 +278,46 @@ func displayBeansTable(beansResponse *actuator.BeansResponse, filter string) err
 	return nil
 }
 
-func truncateString(s string, maxLen int) string {
-	if len(s) <= maxLen {
-		return s
-	}
-	if maxLen <= 1 {
-		return s[:maxLen]
-	}
-	return s[:maxLen-1] + "…"
-}
-
+// smartTruncate shortens s to maxLen runes, keeping the segment after the
+// last dot intact where possible since it carries the most meaning.
 func smartTruncate(s string, maxLen int) string {
-	if len(s) <= maxLen {
+	runes := []rune(s)
+	if len(runes) <= maxLen {
 		return s
 	}
 
 	lastDot := strings.LastIndex(s, ".")
-	var suffix string
+	var suffix []rune
 
 	if lastDot != -1 && lastDot < len(s)-1 {
-		suffix = s[lastDot+1:]
+		suffix = []rune(s[lastDot+1:])
 	} else {
+		// No dot to anchor on: keep a tail of just under half the budget and
+		// leave the rest for the prefix and the ellipsis.
 		suffixLen := (maxLen - 3) / 2
-		if suffixLen > len(s) {
-			suffixLen = len(s)
+		if suffixLen > len(runes) {
+			suffixLen = len(runes)
 		}
-		suffix = s[len(s)-suffixLen:]
+		suffix = runes[len(runes)-suffixLen:]
 	}
 
+	// The kept segment alone busts the budget: show as much of its tail as
+	// fits behind an ellipsis.
 	if len(suffix) > maxLen-1 {
-		return "…" + suffix[len(suffix)-(maxLen-1):]
+		return "…" + string(suffix[len(suffix)-(maxLen-1):])
 	}
 
 	prefixLen := maxLen - len(suffix) - 1
-	if prefixLen < 0 {
-		prefixLen = 0
+	if prefixLen <= 0 {
+		return "…" + string(suffix)
 	}
-
-	if prefixLen == 0 {
-		return "…" + suffix
-	}
-	return s[:prefixLen] + "…" + suffix
+	return string(runes[:prefixLen]) + "…" + string(suffix)
 }
 
 func shortenType(fullType string, maxLen int) string {
 	lastDot := strings.LastIndex(fullType, ".")
 	if lastDot == -1 {
-		return truncateString(fullType, maxLen) // No package, just truncate
+		return truncateString(fullType, maxLen)
 	}
 
 	packagePath := fullType[:lastDot]

@@ -3,17 +3,23 @@ package cmd
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"sort"
+	"strings"
 
 	"github.com/deviceinsight/kubectl-actuator/internal/actuator"
 	"github.com/spf13/cobra"
 	"k8s.io/cli-runtime/pkg/genericclioptions"
 )
 
+const maxHealthDetailsLength = 100
+
 type healthCommandOperations struct {
 	baseOperations
-	output string
+	output   string
+	group    string
+	sawNonUp bool
 }
 
 func NewHealthCommand(configFlags *genericclioptions.ConfigFlags, podResolver PodResolver) *cobra.Command {
@@ -25,50 +31,100 @@ func NewHealthCommand(configFlags *genericclioptions.ConfigFlags, podResolver Po
 	}
 
 	cmd := &cobra.Command{
-		Use:   "health",
+		Use:   "health [GROUP]",
 		Short: "Get application health status",
 		Long: `Get application health status from Spring Boot Actuator.
 
-Displays the overall health status and individual health indicators.`,
-		Args: cobra.NoArgs,
+Displays the overall health status and individual health indicators.
+With a GROUP argument, queries a health group (e.g. liveness, readiness)
+or a single component instead.
+
+Exit codes: 0 if every targeted pod is UP, 1 if at least one pod reports
+a status other than UP, 2 if the check itself failed.`,
+		Example: `  # Check health of all pods in a deployment
+  kubectl actuator -d my-app health
+
+  # Query the readiness health group
+  kubectl actuator -d my-app health readiness
+
+  # Include component details
+  kubectl actuator -d my-app health -o wide`,
+		Args: cobra.MaximumNArgs(1),
+		ValidArgsFunction: func(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
+			if len(args) > 0 {
+				return nil, cobra.ShellCompDirectiveNoFileComp
+			}
+			client, ok := operations.completionClient(cmd)
+			if !ok {
+				return nil, cobra.ShellCompDirectiveNoFileComp
+			}
+			health, err := client.GetHealth("")
+			if err != nil {
+				return nil, cobra.ShellCompDirectiveNoFileComp
+			}
+			return health.Groups, cobra.ShellCompDirectiveNoFileComp
+		},
 		RunE: func(cmd *cobra.Command, args []string) error {
-			if err := operations.complete(cmd); err != nil {
-				return err
+			if len(args) > 0 {
+				operations.group = args[0]
 			}
-			if err := operations.validate(); err != nil {
-				return err
+			if err := operations.run(cmd); err != nil {
+				if errors.Is(err, ErrInterrupted) {
+					return err
+				}
+				return &ExitCodeError{Code: 2, Err: err}
 			}
-			return RunForEachPod(cmd.Context(), operations.pods, "get health", operations.runForPod)
+			if operations.sawNonUp {
+				// The non-UP status is already on screen; exit 1 without a
+				// redundant error line.
+				cmd.SilenceErrors = true
+				return &ExitCodeError{Code: 1}
+			}
+			return nil
 		},
 	}
 
-	cmd.Flags().StringVarP(&operations.output, "output", "o", "", "Output format. One of: wide")
+	addOutputFlag(cmd, &operations.output, "", OutputFormatWide, OutputFormatJSON, OutputFormatYAML)
 
 	return cmd
 }
 
-func (o *healthCommandOperations) validate() error {
-	if err := o.validatePods(); err != nil {
+func (o *healthCommandOperations) run(cmd *cobra.Command) error {
+	if err := o.validateFlags(); err != nil {
 		return err
 	}
-	return validateOutputFormat(o.output, OutputFormatWide)
+	return o.runEndpoint(cmd, "get health", o.output, o.structuredForPod, o.runForPod)
 }
 
-func (o *healthCommandOperations) runForPod(ctx context.Context, podName string) error {
-	client, err := o.actuatorClientFactory.NewClient(ctx, podName)
+func (o *healthCommandOperations) validateFlags() error {
+	return validateOutputFormat(o.output, OutputFormatWide, OutputFormatJSON, OutputFormatYAML)
+}
+
+func (o *healthCommandOperations) structuredForPod(client actuator.Client) (json.RawMessage, error) {
+	data, err := client.GetHealthRaw(o.group)
+	if err != nil {
+		return nil, err
+	}
+	var probe struct {
+		Status string `json:"status"`
+	}
+	if json.Unmarshal(data, &probe) == nil && probe.Status != "" && probe.Status != "UP" {
+		o.sawNonUp = true
+	}
+	return data, nil
+}
+
+func (o *healthCommandOperations) runForPod(ctx context.Context, client actuator.Client, podName string) error {
+	health, err := client.GetHealth(o.group)
 	if err != nil {
 		return err
 	}
 
-	health, err := client.GetHealth()
-	if err != nil {
-		return err
+	if health.Status != "" && health.Status != "UP" {
+		o.sawNonUp = true
 	}
 
-	if o.output == OutputFormatWide {
-		return displayHealthWide(health)
-	}
-	return displayHealthTable(health)
+	return displayHealth(health, o.output == OutputFormatWide)
 }
 
 type componentEntry struct {
@@ -114,36 +170,31 @@ func collectComponentsRecursive(components map[string]actuator.HealthComponent, 
 	}
 }
 
-func displayHealthTable(health *actuator.HealthResponse) error {
+func displayHealth(health *actuator.HealthResponse, wide bool) error {
 	w := newTableWriter()
-	defer func() { _ = w.Flush() }()
-
-	_, _ = fmt.Fprintln(w, "COMPONENT\tSTATUS")
-
-	entries := collectComponents(health.Components, "")
-
-	for _, entry := range entries {
-		_, _ = fmt.Fprintf(w, "%s\t%s\n", entry.path, entry.status)
+	printRow := func(component, status, details string) {
+		if wide {
+			_, _ = fmt.Fprintf(w, "%s\t%s\t%s\n", component, status, details)
+		} else {
+			_, _ = fmt.Fprintf(w, "%s\t%s\n", component, status)
+		}
 	}
 
-	_, _ = fmt.Fprintf(w, "[overall]\t%s\n", health.Status)
+	printRow("COMPONENT", "STATUS", "DETAILS")
+	for _, entry := range collectComponents(health.Components, "") {
+		printRow(entry.path, entry.status, truncateString(entry.details, maxHealthDetailsLength))
+	}
+	printRow("[overall]", health.Status, "-")
+	_ = w.Flush()
+
+	printHealthGroups(health.Groups)
 
 	return nil
 }
 
-func displayHealthWide(health *actuator.HealthResponse) error {
-	w := newTableWriter()
-	defer func() { _ = w.Flush() }()
-
-	_, _ = fmt.Fprintln(w, "COMPONENT\tSTATUS\tDETAILS")
-
-	entries := collectComponents(health.Components, "")
-
-	for _, entry := range entries {
-		_, _ = fmt.Fprintf(w, "%s\t%s\t%s\n", entry.path, entry.status, entry.details)
+func printHealthGroups(groups []string) {
+	if len(groups) == 0 {
+		return
 	}
-
-	_, _ = fmt.Fprintf(w, "[overall]\t%s\t-\n", health.Status)
-
-	return nil
+	fmt.Printf("\nGroups: %s\n", strings.Join(groups, ", "))
 }

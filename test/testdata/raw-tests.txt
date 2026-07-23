@@ -1,28 +1,43 @@
 -- test: raw endpoint basic access --
 -- command --
 kubectl-actuator --pod {{pod}} raw /health
--- expect --
-"status"
+-- expect:jsonpath --
+pods.0.data.status == UP
 
 
 -- test: raw endpoint non-existent --
 -- command --
 kubectl-actuator --pod {{pod}} raw /nonexistent
--- expect --
+-- expect:error --
 "error":
+-- expect:stdout --
+"error":
+-- expect:stdout --
+not exposed by this application
+-- expect:stderr --
+not exposed by this application
+
+
+-- test: raw excluded endpoint gets activation guidance --
+-- command --
+kubectl-actuator --pod {{pod}} raw mappings
+-- expect:error --
+not exposed by this application
+-- expect:stdout --
+management.endpoints.web.exposure.include
 
 
 -- test: raw endpoint without slash prefix --
 -- command --
 kubectl-actuator --pod {{pod}} raw health
--- expect --
-"status"
+-- expect:jsonpath --
+pods.0.data.status == UP
 
 
 -- test: raw multi-pod --
 -- command --
 kubectl-actuator --pod {{pod[0]}} --pod {{pod[1]}} raw /health
--- expect --
-"pods":
--- expect --
-"status"
+-- expect:jsonpath --
+pods.0.data.status == UP
+-- expect:jsonpath --
+pods.1.data.status == UP

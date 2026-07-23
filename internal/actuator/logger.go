@@ -2,22 +2,29 @@ package actuator
 
 import "net/url"
 
-func (c *actuatorClient) GetLoggers() ([]LoggerConfiguration, error) {
-	var actuatorResponse loggersResponse
-	if err := c.getAndParse("/loggers", "loggers", "failed to get loggers", &actuatorResponse); err != nil {
+func (c *actuatorClient) GetLoggers() (*LoggersResponse, error) {
+	var payload loggersPayload
+	if err := c.getAndParse("/loggers", "loggers", "failed to get loggers", &payload); err != nil {
 		return nil, err
 	}
 
-	var loggers []LoggerConfiguration
-	for loggerName, logger := range actuatorResponse.Loggers {
-		loggers = append(loggers, LoggerConfiguration{
+	response := &LoggersResponse{}
+	for loggerName, logger := range payload.Loggers {
+		response.Loggers = append(response.Loggers, LoggerConfiguration{
 			Name:            loggerName,
 			ConfiguredLevel: logger.ConfiguredLevel,
 			EffectiveLevel:  logger.EffectiveLevel,
 		})
 	}
+	for groupName, group := range payload.Groups {
+		response.Groups = append(response.Groups, LoggerGroup{
+			Name:            groupName,
+			ConfiguredLevel: group.ConfiguredLevel,
+			Members:         group.Members,
+		})
+	}
 
-	return loggers, nil
+	return response, nil
 }
 
 func (c *actuatorClient) SetLoggerLevel(logger string, level string) error {
@@ -32,14 +39,22 @@ func (c *actuatorClient) SetLoggerLevel(logger string, level string) error {
 
 	resp, err := c.httpClient.Post(path, body)
 	if err != nil {
-		return err
+		return c.connectionError(err)
 	}
 
 	if resp.IsErrorStatus() {
-		return endpointError("loggers", resp.Status, "failed to set logger level")
+		return c.statusError("loggers", resp.StatusCode, resp.Status, "failed to set logger level")
 	}
 
 	return nil
+}
+
+// LoggersResponse is the parsed /loggers document: individual loggers plus
+// logger groups (Spring Boot 2.7+), which set the level of all their
+// members at once.
+type LoggersResponse struct {
+	Loggers []LoggerConfiguration
+	Groups  []LoggerGroup
 }
 
 type LoggerConfiguration struct {
@@ -48,15 +63,27 @@ type LoggerConfiguration struct {
 	EffectiveLevel  *string
 }
 
+type LoggerGroup struct {
+	Name            string
+	ConfiguredLevel *string
+	Members         []string
+}
+
 type setLoggerLevelRequest struct {
 	ConfiguredLevel *string `json:"configuredLevel"`
 }
 
-type loggersResponse struct {
+type loggersPayload struct {
 	Loggers map[string]loggerInfo `json:"loggers"`
+	Groups  map[string]groupInfo  `json:"groups"`
 }
 
 type loggerInfo struct {
 	ConfiguredLevel *string `json:"configuredLevel"`
 	EffectiveLevel  *string `json:"effectiveLevel"`
+}
+
+type groupInfo struct {
+	ConfiguredLevel *string  `json:"configuredLevel"`
+	Members         []string `json:"members"`
 }

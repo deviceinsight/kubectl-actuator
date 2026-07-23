@@ -14,19 +14,17 @@ func (c *actuatorClient) GetEnvProperty(propertyName string) (*EnvPropertyRespon
 	path := "/env/" + url.PathEscape(propertyName)
 	resp, err := c.httpClient.Get(path)
 	if err != nil {
-		return nil, err
+		return nil, c.connectionError(err)
 	}
 
 	if resp.IsErrorStatus() {
-		if resp.StatusCode == 404 && c.isEndpointAccessible("/env") {
-			return nil, resourceNotFoundError("property", propertyName, resp.Status)
-		}
-		return nil, endpointError("env", resp.Status, "failed to get property")
+		return nil, c.resourceStatusError("env", resp.StatusCode, resp.Status, "failed to get property",
+			resourceNotFoundError("property", propertyName, resp.Status))
 	}
 
 	var propertyResponse EnvPropertyResponse
 	if err := parseJSON(resp.Body, &propertyResponse); err != nil {
-		return nil, err
+		return nil, c.notJSONError(err, "failed to get property")
 	}
 
 	return &propertyResponse, nil
@@ -43,8 +41,8 @@ type PropertySource struct {
 }
 
 type PropertyDetails struct {
-	Value  interface{} `json:"value"`
-	Origin string      `json:"origin,omitempty"`
+	Value  any    `json:"value"`
+	Origin string `json:"origin,omitempty"`
 }
 
 type EnvPropertyResponse struct {
@@ -55,11 +53,11 @@ type EnvPropertyResponse struct {
 }
 
 type PropertyValue struct {
-	Source string      `json:"source"`
-	Value  interface{} `json:"value"`
+	Source string `json:"source"`
+	Value  any    `json:"value"`
 }
 
 type PropertySourceReference struct {
-	Name     string      `json:"name"`
-	Property interface{} `json:"property,omitempty"`
+	Name     string `json:"name"`
+	Property any    `json:"property,omitempty"`
 }

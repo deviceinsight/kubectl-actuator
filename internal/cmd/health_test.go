@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"slices"
 	"strings"
 	"testing"
 
@@ -20,7 +21,7 @@ func TestDisplayHealthTable(t *testing.T) {
 				Components: map[string]actuator.HealthComponent{
 					"diskSpace": {
 						Status: "UP",
-						Details: map[string]interface{}{
+						Details: map[string]any{
 							"total": 254431723520,
 							"free":  4280823808,
 						},
@@ -53,13 +54,13 @@ func TestDisplayHealthTable(t *testing.T) {
 						Components: map[string]actuator.HealthComponent{
 							"us1": {
 								Status: "UP",
-								Details: map[string]interface{}{
+								Details: map[string]any{
 									"version": "1.0.2",
 								},
 							},
 							"eu1": {
 								Status: "DOWN",
-								Details: map[string]interface{}{
+								Details: map[string]any{
 									"error": "connection timeout",
 								},
 							},
@@ -138,14 +139,14 @@ func TestDisplayHealthTable(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			output := captureOutput(func() {
-				if err := displayHealthTable(tt.health); err != nil {
-					t.Errorf("displayHealthTable() error = %v", err)
+				if err := displayHealth(tt.health, false); err != nil {
+					t.Errorf("displayHealth() error = %v", err)
 				}
 			})
 
 			for _, expected := range tt.expected {
 				if !strings.Contains(output, expected) {
-					t.Errorf("displayHealthTable() output missing expected value:\n  want: %s\n  got:\n%s", expected, output)
+					t.Errorf("displayHealth() output missing expected value:\n  want: %s\n  got:\n%s", expected, output)
 				}
 			}
 		})
@@ -154,10 +155,9 @@ func TestDisplayHealthTable(t *testing.T) {
 
 func TestDisplayHealthWide(t *testing.T) {
 	tests := []struct {
-		name        string
-		health      *actuator.HealthResponse
-		expected    []string
-		notExpected []string
+		name     string
+		health   *actuator.HealthResponse
+		expected []string
 	}{
 		{
 			name: "components with details",
@@ -166,7 +166,7 @@ func TestDisplayHealthWide(t *testing.T) {
 				Components: map[string]actuator.HealthComponent{
 					"diskSpace": {
 						Status: "UP",
-						Details: map[string]interface{}{
+						Details: map[string]any{
 							"total": float64(254431723520),
 							"free":  float64(4280823808),
 						},
@@ -199,13 +199,13 @@ func TestDisplayHealthWide(t *testing.T) {
 						Components: map[string]actuator.HealthComponent{
 							"us1": {
 								Status: "UP",
-								Details: map[string]interface{}{
+								Details: map[string]any{
 									"version": "1.0.2",
 								},
 							},
 							"eu1": {
 								Status: "DOWN",
-								Details: map[string]interface{}{
+								Details: map[string]any{
 									"error": "connection timeout",
 								},
 							},
@@ -253,28 +253,60 @@ func TestDisplayHealthWide(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			output := captureOutput(func() {
-				if err := displayHealthWide(tt.health); err != nil {
-					t.Errorf("displayHealthWide() error = %v", err)
+				if err := displayHealth(tt.health, true); err != nil {
+					t.Errorf("displayHealth() error = %v", err)
 				}
 			})
 
 			for _, expected := range tt.expected {
 				if !strings.Contains(output, expected) {
-					t.Errorf("displayHealthWide() output missing expected value:\n  want: %s\n  got:\n%s", expected, output)
-				}
-			}
-
-			for _, notExpected := range tt.notExpected {
-				if strings.Contains(output, notExpected) {
-					t.Errorf("displayHealthWide() output contains unexpected value:\n  don't want: %s\n  got:\n%s", notExpected, output)
+					t.Errorf("displayHealth() output missing expected value:\n  want: %s\n  got:\n%s", expected, output)
 				}
 			}
 		})
 	}
 }
 
+// TestDisplayHealthRowAssociation pins statuses to their components: the
+// substring checks above would still pass if DOWN moved to a different row.
+func TestDisplayHealthRowAssociation(t *testing.T) {
+	health := &actuator.HealthResponse{
+		Status: "UP",
+		Components: map[string]actuator.HealthComponent{
+			"broker": {
+				Status: "UP",
+				Components: map[string]actuator.HealthComponent{
+					"us1": {Status: "UP"},
+					"eu1": {Status: "DOWN"},
+				},
+			},
+		},
+	}
+
+	output := captureOutput(func() {
+		if err := displayHealth(health, false); err != nil {
+			t.Errorf("displayHealth() error = %v", err)
+		}
+	})
+
+	for _, wantRow := range []string{"broker/eu1 DOWN", "broker/us1 UP"} {
+		found := false
+		for _, line := range strings.Split(output, "\n") {
+			if strings.Join(strings.Fields(line), " ") == wantRow {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Errorf("no output line reads %q:\n%s", wantRow, output)
+		}
+	}
+}
+
+// TestHealthComponentsSorting pins the row order: entries are sorted by
+// path, so nested components follow their parent and output is stable
+// across runs regardless of map iteration order.
 func TestHealthComponentsSorting(t *testing.T) {
-	// Test that components are sorted alphabetically in table output
 	health := &actuator.HealthResponse{
 		Status: "UP",
 		Components: map[string]actuator.HealthComponent{
@@ -292,82 +324,22 @@ func TestHealthComponentsSorting(t *testing.T) {
 	}
 
 	output := captureOutput(func() {
-		if err := displayHealthTable(health); err != nil {
-			t.Errorf("displayHealthTable() error = %v", err)
+		if err := displayHealth(health, false); err != nil {
+			t.Errorf("displayHealth() error = %v", err)
 		}
 	})
 
-	lines := strings.Split(strings.TrimSpace(output), "\n")
-
-	// Skip header line
-	if len(lines) < 2 {
-		t.Fatal("Expected at least 2 lines of output (header + data)")
-	}
-
-	componentLines := lines[1:]
-
-	// Extract component names (first column), skip "[overall]" row
 	var components []string
-	for _, line := range componentLines {
-		// Skip empty lines
-		if strings.TrimSpace(line) == "" {
+	for _, line := range strings.Split(strings.TrimSpace(output), "\n")[1:] {
+		fields := strings.Fields(line)
+		if len(fields) == 0 || fields[0] == "[overall]" {
 			continue
 		}
-		fields := strings.Fields(line)
-		if len(fields) > 0 && fields[0] != "[overall]" {
-			components = append(components, fields[0])
-		}
+		components = append(components, fields[0])
 	}
 
-	// Verify sorted order
-	expected := []string{"alpha", "beta", "gamma", "gamma/gamma1", "gamma/gamma2", "zeta"}
-	if len(components) != len(expected) {
-		t.Errorf("Expected %d components, got %d", len(expected), len(components))
-	}
-
-	for i, comp := range components {
-		if i < len(expected) && comp != expected[i] {
-			t.Errorf("Component at position %d: got %q, want %q", i, comp, expected[i])
-		}
-	}
-}
-
-func TestHealthNestedPathFormatting(t *testing.T) {
-	// Test that nested components use "/" separator
-	health := &actuator.HealthResponse{
-		Status: "UP",
-		Components: map[string]actuator.HealthComponent{
-			"parent": {
-				Status: "UP",
-				Components: map[string]actuator.HealthComponent{
-					"child": {
-						Status: "UP",
-						Components: map[string]actuator.HealthComponent{
-							"grandchild": {
-								Status: "DOWN",
-							},
-						},
-					},
-				},
-			},
-		},
-	}
-
-	output := captureOutput(func() {
-		if err := displayHealthTable(health); err != nil {
-			t.Errorf("displayHealthTable() error = %v", err)
-		}
-	})
-
-	expectedPaths := []string{
-		"parent",
-		"parent/child",
-		"parent/child/grandchild",
-	}
-
-	for _, path := range expectedPaths {
-		if !strings.Contains(output, path) {
-			t.Errorf("Output missing expected path %q:\n%s", path, output)
-		}
+	want := []string{"alpha", "beta", "gamma", "gamma/gamma1", "gamma/gamma2", "zeta"}
+	if !slices.Equal(components, want) {
+		t.Errorf("component order = %v, want %v", components, want)
 	}
 }

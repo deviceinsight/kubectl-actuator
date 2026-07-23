@@ -2,21 +2,18 @@ package k8s
 
 import (
 	"context"
-	"net/http"
 
 	corev1 "k8s.io/api/core/v1"
-	"k8s.io/client-go/kubernetes"
 )
 
+// Client provides namespace-scoped access to the Kubernetes resources this
+// tool works with. The namespace is fixed at connection time from the
+// kubeconfig or the --namespace flag.
 type Client interface {
-	GetPod(ctx context.Context, namespace, name string) (*corev1.Pod, error)
-	ListPods(ctx context.Context, namespace, labelSelector string) ([]string, error)
-	ListDeployments(ctx context.Context, namespace string) ([]string, error)
-	GetDeploymentPods(ctx context.Context, namespace, deploymentName string) ([]string, error)
-	Clientset() kubernetes.Interface
+	GetPod(ctx context.Context, name string) (*corev1.Pod, error)
+	ListPods(ctx context.Context, labelSelector string) ([]string, error)
+	ListNamespaces(ctx context.Context) ([]string, error)
+	ListDeployments(ctx context.Context) ([]string, error)
+	GetDeploymentPods(ctx context.Context, deploymentName string) ([]string, error)
 	Namespace() string
-}
-
-type TransportFactory interface {
-	CreateHttpTransport(podName string, podPort int) (*http.Transport, error)
 }

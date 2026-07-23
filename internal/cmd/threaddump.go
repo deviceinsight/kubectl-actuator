@@ -2,7 +2,9 @@ package cmd
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"os"
 	"slices"
 	"strings"
 
@@ -22,7 +24,6 @@ type threaddumpCommandOperations struct {
 	nameFilter   string
 	summary      bool
 	noStacktrace bool
-	wideMode     bool
 }
 
 func NewThreadDumpCommand(configFlags *genericclioptions.ConfigFlags, podResolver PodResolver) *cobra.Command {
@@ -34,65 +35,102 @@ func NewThreadDumpCommand(configFlags *genericclioptions.ConfigFlags, podResolve
 	}
 
 	cmd := &cobra.Command{
-		Use:   "threaddump",
-		Short: "Get thread dump and analyze thread states",
+		Use:     "threaddump",
+		Aliases: []string{"thread-dump"},
+		Short:   "Get thread dump and analyze thread states",
 		Long: `Get thread dump from Spring Boot Actuator.
 
 Displays thread information including thread states, blocked threads, and stack traces.`,
-		Args: cobra.NoArgs,
+		Example: `  # Show only the thread state summary
+  kubectl actuator -d my-app threaddump --summary
+
+  # Show blocked threads with their stack traces
+  kubectl actuator -d my-app threaddump --state BLOCKED
+
+  # Show threads whose name contains 'http', without stack traces
+  kubectl actuator -d my-app threaddump -f http --no-stacktrace`,
+		Args:              cobra.NoArgs,
+		ValidArgsFunction: cobra.NoFileCompletions,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			if err := operations.complete(cmd); err != nil {
+			if err := operations.validateFlags(); err != nil {
 				return err
 			}
-			if err := operations.validate(); err != nil {
-				return err
-			}
-			return RunForEachPod(cmd.Context(), operations.pods, "get threaddump", operations.runForPod)
+			return operations.runEndpoint(cmd, "get threaddump", operations.output, operations.structuredForPod, operations.runForPod)
 		},
 	}
 
-	cmd.Flags().StringVarP(&operations.output, "output", "o", "", "Output format. One of: wide")
+	addOutputFlag(cmd, &operations.output, "", OutputFormatWide, OutputFormatJSON, OutputFormatYAML)
 	cmd.Flags().StringVar(&operations.stateFilter, "state", "", "Filter by thread state (e.g., BLOCKED, WAITING, RUNNABLE)")
-	cmd.Flags().StringVar(&operations.nameFilter, "name", "", "Filter by thread name pattern")
+	_ = cmd.RegisterFlagCompletionFunc("state", cobra.FixedCompletions(validThreadStates, cobra.ShellCompDirectiveNoFileComp))
+	cmd.Flags().StringVarP(&operations.nameFilter, "filter", "f", "", "Filter by thread name (case-insensitive substring)")
+	markNoFileFlags(cmd, "filter")
 	cmd.Flags().BoolVar(&operations.summary, "summary", false, "Show only thread state summary")
 	cmd.Flags().BoolVar(&operations.noStacktrace, "no-stacktrace", false, "Show thread list without stack traces")
 
 	return cmd
 }
 
-func (o *threaddumpCommandOperations) complete(cmd *cobra.Command) error {
-	if err := o.baseOperations.complete(cmd); err != nil {
-		return err
-	}
-	o.wideMode = o.output == OutputFormatWide
-	return nil
-}
-
-func (o *threaddumpCommandOperations) validate() error {
-	if err := o.validatePods(); err != nil {
+func (o *threaddumpCommandOperations) validateFlags() error {
+	if err := validateOutputFormat(o.output, OutputFormatWide, OutputFormatJSON, OutputFormatYAML); err != nil {
 		return err
 	}
 
-	if err := validateOutputFormat(o.output, OutputFormatWide); err != nil {
-		return err
+	if isStructuredOutput(o.output) && (o.summary || o.noStacktrace) {
+		return fmt.Errorf("--summary and --no-stacktrace cannot be combined with -o %s", o.output)
 	}
 
-	if o.stateFilter != "" {
-		o.stateFilter = strings.ToUpper(o.stateFilter)
-		if !slices.Contains(validThreadStates, o.stateFilter) {
-			return fmt.Errorf("invalid thread state '%s'\nValid states: %v", o.stateFilter, validThreadStates)
-		}
+	// State matching is case-insensitive throughout, so the filter is only
+	// validated here, never rewritten.
+	if o.stateFilter != "" && !slices.Contains(validThreadStates, strings.ToUpper(o.stateFilter)) {
+		return fmt.Errorf("invalid thread state %q\nValid states: %s", o.stateFilter, strings.Join(validThreadStates, ", "))
 	}
 
 	return nil
 }
 
-func (o *threaddumpCommandOperations) runForPod(ctx context.Context, podName string) error {
-	client, err := o.actuatorClientFactory.NewClient(ctx, podName)
+func (o *threaddumpCommandOperations) structuredForPod(client actuator.Client) (json.RawMessage, error) {
+	data, err := client.GetRaw("threaddump")
 	if err != nil {
-		return err
+		return nil, err
 	}
+	return filterThreadDumpJSON(data, o.stateFilter, o.nameFilter)
+}
 
+// filterThreadDumpJSON applies the state and name filters to the raw
+// /threaddump response, keeping all other thread fields intact.
+func filterThreadDumpJSON(data json.RawMessage, stateFilter, nameFilter string) (json.RawMessage, error) {
+	if stateFilter == "" && nameFilter == "" {
+		return data, nil
+	}
+	tree, err := decodeTree(data)
+	if err != nil {
+		return nil, err
+	}
+	threads, ok := tree["threads"].([]any)
+	if !ok {
+		return data, nil
+	}
+	filtered := make([]any, 0, len(threads))
+	for _, threadValue := range threads {
+		threadMap, ok := threadValue.(map[string]any)
+		if !ok {
+			continue
+		}
+		state, _ := threadMap["threadState"].(string)
+		name, _ := threadMap["threadName"].(string)
+		if stateFilter != "" && !strings.EqualFold(state, stateFilter) {
+			continue
+		}
+		if !matchesFilter(name, nameFilter) {
+			continue
+		}
+		filtered = append(filtered, threadValue)
+	}
+	tree["threads"] = filtered
+	return encodeTree(tree)
+}
+
+func (o *threaddumpCommandOperations) runForPod(ctx context.Context, client actuator.Client, podName string) error {
 	threaddump, err := client.GetThreadDump()
 	if err != nil {
 		return err
@@ -113,7 +151,7 @@ func (o *threaddumpCommandOperations) displayThreadDump(threaddump *actuator.Thr
 	fmt.Println()
 
 	if len(filteredThreads) == 0 {
-		fmt.Println("No threads match the specified filters.")
+		_, _ = fmt.Fprintln(os.Stderr, "No threads match the specified filters")
 		return nil
 	}
 
@@ -121,16 +159,26 @@ func (o *threaddumpCommandOperations) displayThreadDump(threaddump *actuator.Thr
 		fmt.Printf("Showing %d filtered threads:\n\n", len(filteredThreads))
 	}
 
-	maxFrames := defaultMaxStackFrames
-	if o.wideMode {
-		maxFrames = -1
-	}
-
+	opts := threadDisplayOptions{wide: o.output == OutputFormatWide, noStacktrace: o.noStacktrace}
 	for i, thread := range filteredThreads {
-		displayThread(thread, i+1, o.wideMode, o.noStacktrace, maxFrames)
+		displayThread(thread, i+1, opts)
 	}
 
 	return nil
+}
+
+// threadDisplayOptions controls how much detail displayThread renders.
+type threadDisplayOptions struct {
+	wide         bool
+	noStacktrace bool
+}
+
+// maxFrames returns the stack frame limit; wide mode shows all frames.
+func (opts threadDisplayOptions) maxFrames() int {
+	if opts.wide {
+		return -1
+	}
+	return defaultMaxStackFrames
 }
 
 func (o *threaddumpCommandOperations) filterThreads(threads []actuator.Thread) ([]actuator.Thread, map[string]int) {
@@ -143,7 +191,7 @@ func (o *threaddumpCommandOperations) filterThreads(threads []actuator.Thread) (
 		if o.stateFilter != "" && !strings.EqualFold(thread.ThreadState, o.stateFilter) {
 			continue
 		}
-		if o.nameFilter != "" && !strings.Contains(strings.ToLower(thread.ThreadName), strings.ToLower(o.nameFilter)) {
+		if !matchesFilter(thread.ThreadName, o.nameFilter) {
 			continue
 		}
 		filtered = append(filtered, thread)
@@ -162,12 +210,12 @@ func displayThreadSummary(totalThreads int, stateCounts map[string]int) {
 	}
 }
 
-func displayThread(thread actuator.Thread, index int, wideMode, noStacktrace bool, maxFrames int) {
+func displayThread(thread actuator.Thread, index int, opts threadDisplayOptions) {
 	fmt.Printf("Thread #%d: %s (ID: %d)\n", index, thread.ThreadName, thread.ThreadID)
 	fmt.Printf("  State: %s\n", thread.ThreadState)
 	fmt.Printf("  Daemon: %t, In Native: %t, Suspended: %t\n", thread.Daemon, thread.InNative, thread.Suspended)
 
-	if thread.Priority > 0 && wideMode {
+	if thread.Priority > 0 && opts.wide {
 		fmt.Printf("  Priority: %d\n", thread.Priority)
 	}
 
@@ -187,12 +235,12 @@ func displayThread(thread actuator.Thread, index int, wideMode, noStacktrace boo
 		fmt.Println()
 	}
 
-	if thread.LockOwnerId > 0 {
-		fmt.Printf("  Waiting on lock owned by thread ID: %d\n", thread.LockOwnerId)
+	if thread.LockOwnerID > 0 {
+		fmt.Printf("  Waiting on lock owned by thread ID: %d\n", thread.LockOwnerID)
 	}
 
-	if !noStacktrace && len(thread.StackTrace) > 0 {
-		displayStackTrace(thread.StackTrace, maxFrames)
+	if !opts.noStacktrace && len(thread.StackTrace) > 0 {
+		displayStackTrace(thread.StackTrace, opts.maxFrames())
 	}
 
 	fmt.Println()

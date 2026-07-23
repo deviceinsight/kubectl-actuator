@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"sort"
@@ -17,8 +18,7 @@ const maxStatusMessageLength = 80
 
 type scheduledTasksCommandOperations struct {
 	baseOperations
-	output   string
-	wideMode bool
+	output string
 }
 
 func NewScheduledTasksCommand(configFlags *genericclioptions.ConfigFlags, podResolver PodResolver) *cobra.Command {
@@ -30,62 +30,53 @@ func NewScheduledTasksCommand(configFlags *genericclioptions.ConfigFlags, podRes
 	}
 
 	cmd := &cobra.Command{
-		Use:   "scheduled-tasks",
-		Short: "Show scheduled tasks",
-		Long: `Show scheduled tasks from Spring Boot Actuator.
+		Use:     "scheduledtasks",
+		Aliases: []string{"scheduled-tasks"},
+		Short:   "Get scheduled tasks",
+		Long: `Get scheduled tasks from Spring Boot Actuator.
 
-Displays scheduled tasks configured in your application.`,
-		Args: cobra.NoArgs,
+Displays scheduled tasks configured in your application. Execution
+tracking (NEXT, LAST, STATUS) requires Spring Boot 3.4 or later.`,
+		Example: `  # Show scheduled tasks with their schedules and last outcome
+  kubectl actuator -d my-app scheduledtasks
+
+  # Show full target names and untruncated error messages
+  kubectl actuator -d my-app scheduledtasks -o wide`,
+		Args:              cobra.NoArgs,
+		ValidArgsFunction: cobra.NoFileCompletions,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			if err := operations.complete(cmd); err != nil {
+			if err := operations.validateFlags(); err != nil {
 				return err
 			}
-			if err := operations.validate(); err != nil {
-				return err
-			}
-			return RunForEachPod(cmd.Context(), operations.pods, "get scheduled tasks", operations.runForPod)
+			return operations.runEndpoint(cmd, "get scheduled tasks", operations.output, operations.structuredForPod, operations.runForPod)
 		},
 	}
 
-	cmd.Flags().StringVarP(&operations.output, "output", "o", "", "Output format. One of: wide")
+	addOutputFlag(cmd, &operations.output, "", OutputFormatWide, OutputFormatJSON, OutputFormatYAML)
 
 	return cmd
 }
 
-func (o *scheduledTasksCommandOperations) complete(cmd *cobra.Command) error {
-	if err := o.baseOperations.complete(cmd); err != nil {
-		return err
-	}
-
-	o.wideMode = o.output == OutputFormatWide
-
-	return nil
+func (o *scheduledTasksCommandOperations) validateFlags() error {
+	return validateOutputFormat(o.output, OutputFormatWide, OutputFormatJSON, OutputFormatYAML)
 }
 
-func (o *scheduledTasksCommandOperations) validate() error {
-	if err := o.validatePods(); err != nil {
-		return err
-	}
-	return validateOutputFormat(o.output, OutputFormatWide)
+func (o *scheduledTasksCommandOperations) structuredForPod(client actuator.Client) (json.RawMessage, error) {
+	return client.GetRaw("scheduledtasks")
 }
 
-func (o *scheduledTasksCommandOperations) runForPod(ctx context.Context, podName string) error {
-	client, err := o.actuatorClientFactory.NewClient(ctx, podName)
-	if err != nil {
-		return err
-	}
-
+func (o *scheduledTasksCommandOperations) runForPod(ctx context.Context, client actuator.Client, podName string) error {
 	resp, err := client.GetScheduledTasks()
 	if err != nil {
 		return err
 	}
 
-	rows := buildRows(resp, o.wideMode)
-	printRows(rows)
+	rows := buildTaskRows(resp, o.output == OutputFormatWide)
+	printTaskRows(rows)
 	return nil
 }
 
-type tableRow struct {
+type taskRow struct {
 	Type     string
 	Target   string
 	Schedule string
@@ -94,54 +85,54 @@ type tableRow struct {
 	Status   string
 }
 
-func buildRows(r *actuator.ScheduledTasksResponse, wideMode bool) []tableRow {
-	var rows []tableRow
+func buildTaskRows(r *actuator.ScheduledTasksResponse, wide bool) []taskRow {
+	var rows []taskRow
 	for _, t := range r.Cron {
-		rows = append(rows, tableRow{
+		rows = append(rows, taskRow{
 			Type:     "cron",
-			Target:   formatTarget(t.Runnable.Target, wideMode),
+			Target:   formatTaskTarget(t.Runnable.Target, wide),
 			Schedule: fmt.Sprintf("cron(%s)", t.Expression),
-			Next:     formatRelativeTime(t.NextExecution),
-			Last:     formatRelativeTimeExec(t.LastExecution),
-			Status:   formatStatus(t.LastExecution, wideMode),
+			Next:     formatNextRun(t.NextExecution),
+			Last:     formatLastRun(t.LastExecution),
+			Status:   formatLastRunStatus(t.LastExecution, wide),
 		})
 	}
 	for _, t := range r.FixedDelay {
-		schedule := fmt.Sprintf("fixedDelay=%s", formatMs(t.Interval))
+		schedule := fmt.Sprintf("fixedDelay=%s", formatTaskInterval(t.Interval))
 		if t.InitialDelay > 0 {
-			schedule += fmt.Sprintf(" initialDelay=%s", formatMs(t.InitialDelay))
+			schedule += fmt.Sprintf(" initialDelay=%s", formatTaskInterval(t.InitialDelay))
 		}
-		rows = append(rows, tableRow{
+		rows = append(rows, taskRow{
 			Type:     "fixedDelay",
-			Target:   formatTarget(t.Runnable.Target, wideMode),
+			Target:   formatTaskTarget(t.Runnable.Target, wide),
 			Schedule: schedule,
-			Next:     formatRelativeTime(t.NextExecution),
-			Last:     formatRelativeTimeExec(t.LastExecution),
-			Status:   formatStatus(t.LastExecution, wideMode),
+			Next:     formatNextRun(t.NextExecution),
+			Last:     formatLastRun(t.LastExecution),
+			Status:   formatLastRunStatus(t.LastExecution, wide),
 		})
 	}
 	for _, t := range r.FixedRate {
-		schedule := fmt.Sprintf("fixedRate=%s", formatMs(t.Interval))
+		schedule := fmt.Sprintf("fixedRate=%s", formatTaskInterval(t.Interval))
 		if t.InitialDelay > 0 {
-			schedule += fmt.Sprintf(" initialDelay=%s", formatMs(t.InitialDelay))
+			schedule += fmt.Sprintf(" initialDelay=%s", formatTaskInterval(t.InitialDelay))
 		}
-		rows = append(rows, tableRow{
+		rows = append(rows, taskRow{
 			Type:     "fixedRate",
-			Target:   formatTarget(t.Runnable.Target, wideMode),
+			Target:   formatTaskTarget(t.Runnable.Target, wide),
 			Schedule: schedule,
-			Next:     formatRelativeTime(t.NextExecution),
-			Last:     formatRelativeTimeExec(t.LastExecution),
-			Status:   formatStatus(t.LastExecution, wideMode),
+			Next:     formatNextRun(t.NextExecution),
+			Last:     formatLastRun(t.LastExecution),
+			Status:   formatLastRunStatus(t.LastExecution, wide),
 		})
 	}
 	for _, t := range r.Custom {
-		rows = append(rows, tableRow{
+		rows = append(rows, taskRow{
 			Type:     "custom",
-			Target:   formatTarget(t.Runnable.Target, wideMode),
+			Target:   formatTaskTarget(t.Runnable.Target, wide),
 			Schedule: "-",
-			Next:     formatRelativeTime(t.NextExecution),
-			Last:     formatRelativeTimeExec(t.LastExecution),
-			Status:   formatStatus(t.LastExecution, wideMode),
+			Next:     formatNextRun(t.NextExecution),
+			Last:     formatLastRun(t.LastExecution),
+			Status:   formatLastRunStatus(t.LastExecution, wide),
 		})
 	}
 	sort.Slice(rows, func(i, j int) bool {
@@ -153,8 +144,8 @@ func buildRows(r *actuator.ScheduledTasksResponse, wideMode bool) []tableRow {
 	return rows
 }
 
-func formatTarget(target string, showFull bool) string {
-	if showFull {
+func formatTaskTarget(target string, wide bool) string {
+	if wide {
 		return target
 	}
 	parts := strings.Split(target, ".")
@@ -164,7 +155,7 @@ func formatTarget(target string, showFull bool) string {
 	return target
 }
 
-func printRows(rows []tableRow) {
+func printTaskRows(rows []taskRow) {
 	w := newTableWriter()
 	defer func() { _ = w.Flush() }()
 
@@ -175,59 +166,57 @@ func printRows(rows []tableRow) {
 	}
 }
 
-func parseTime(s string) *time.Time {
-	if s == "" {
-		return nil
-	}
+func parseTaskTime(s string) *time.Time {
+	// RFC3339Nano also accepts timestamps without fractional seconds.
 	if t, err := time.Parse(time.RFC3339Nano, s); err == nil {
-		return &t
-	}
-	if t, err := time.Parse(time.RFC3339, s); err == nil {
 		return &t
 	}
 	_, _ = fmt.Fprintf(os.Stderr, "Warning: unable to parse time %q, expected RFC3339 format\n", s)
 	return nil
 }
 
-func formatRelativeTime(ti *actuator.TimeOnly) string {
-	if ti == nil || ti.Time == "" {
+// formatRelativeToNow renders an RFC3339 timestamp as its distance from now,
+// e.g. "in 4m33s" or "27s ago". Unparseable timestamps pass through verbatim.
+func formatRelativeToNow(timestamp string) string {
+	if timestamp == "" {
 		return "-"
 	}
-	if t := parseTime(ti.Time); t != nil {
-		d := time.Until(*t)
-		if d >= 0 {
-			return "in " + formatDurationCompact(d)
-		}
-		return formatDurationCompact(-d) + " ago"
+	t := parseTaskTime(timestamp)
+	if t == nil {
+		return timestamp
 	}
-	return ti.Time
+	d := time.Until(*t)
+	if d >= 0 {
+		return "in " + formatDurationCompact(d)
+	}
+	return formatDurationCompact(-d) + " ago"
 }
 
-func formatRelativeTimeExec(ex *actuator.Execution) string {
-	if ex == nil || ex.Time == "" {
+// formatNextRun and formatLastRun feed the NEXT and LAST columns; tasks that
+// never ran (or Spring Boot < 3.4 without execution tracking) have neither.
+func formatNextRun(next *actuator.TimeOnly) string {
+	if next == nil {
 		return "-"
 	}
-	if t := parseTime(ex.Time); t != nil {
-		d := time.Since(*t)
-		if d >= 0 {
-			return formatDurationCompact(d) + " ago"
-		}
-		return "in " + formatDurationCompact(-d)
-	}
-	return ex.Time
+	return formatRelativeToNow(next.Time)
 }
 
-func formatStatus(ex *actuator.Execution, showFullStatus bool) string {
+func formatLastRun(last *actuator.Execution) string {
+	if last == nil {
+		return "-"
+	}
+	return formatRelativeToNow(last.Time)
+}
+
+func formatLastRunStatus(ex *actuator.Execution, wide bool) string {
 	if ex == nil {
 		return "-"
 	}
 	if ex.Status == "ERROR" && ex.Exception != nil && ex.Exception.Message != "" {
-		msg := ex.Exception.Message
-		if !showFullStatus {
-			runes := []rune(msg)
-			if len(runes) > maxStatusMessageLength {
-				msg = string(runes[:maxStatusMessageLength]) + "…"
-			}
+		// Exception messages can contain newlines that would break the row.
+		msg := escapeValue(ex.Exception.Message)
+		if !wide {
+			msg = truncateString(msg, maxStatusMessageLength)
 		}
 		return ex.Status + " - " + msg
 	}
@@ -237,7 +226,7 @@ func formatStatus(ex *actuator.Execution, showFullStatus bool) string {
 	return ex.Status
 }
 
-func formatMs(ms int64) string {
+func formatTaskInterval(ms int64) string {
 	if ms == 0 {
 		return "0s"
 	}

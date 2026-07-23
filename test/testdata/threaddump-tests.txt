@@ -26,7 +26,7 @@ State: RUNNABLE
 
 -- test: threaddump filter by name --
 -- command --
-kubectl-actuator --pod {{pod}} threaddump --name http
+kubectl-actuator --pod {{pod}} threaddump --filter http
 -- expect:regex --
 Total Threads: \d+
 -- expect --
@@ -35,6 +35,37 @@ Showing
 filtered threads
 -- expect:regex --
 http.*nio
+
+
+-- test: threaddump filter by quoted name with space --
+-- command --
+kubectl-actuator --pod {{pod}} threaddump --filter "Reference Handler"
+-- expect --
+Reference Handler
+-- expect --
+filtered threads
+-- expect:not --
+http-nio
+
+
+-- test: threaddump wide shows priority and full traces --
+-- command --
+kubectl-actuator --pod {{pod}} threaddump -o wide --filter scheduling
+-- expect --
+Thread #
+-- expect --
+Priority:
+-- expect:not --
+more frames
+
+
+-- test: threaddump without stacktraces --
+-- command --
+kubectl-actuator --pod {{pod}} threaddump --no-stacktrace --filter scheduling
+-- expect --
+Thread #
+-- expect:not --
+Stack Trace:
 
 
 -- test: threaddump summary mode --

@@ -5,17 +5,60 @@ kubectl-actuator --pod {{pod}} logger com.nonexistent.package DEBUG
 kubectl-actuator --pod {{pod}} logger
 -- expect --
 com.example.testapp
+-- command --
+kubectl-actuator --pod {{pod}} logger com.nonexistent.package RESET
+-- expect --
+reset to default
 
 
 -- test: error selector matched no pods --
 -- command --
 kubectl-actuator -l nonexistent=label health
 -- expect:error --
-selector nonexistent=label matched no pods
+selector "nonexistent=label" matched no pods in namespace
+-- expect:stderr --
+selector "nonexistent=label" matched no pods in namespace
 
 
 -- test: error no pods selected --
 -- command --
 kubectl-actuator health
 -- expect:error --
-no pods selected: specify --pod, --deployment, or --selector
+no pods selected: use -p <pod>, -d <deployment>, or -l <label-selector>
+-- expect:error --
+e.g. 'kubectl actuator -d my-app health'
+-- expect:stderr --
+no pods selected
+
+
+-- test: pod errors go to stderr not stdout --
+-- command --
+kubectl-actuator --pod nonexistent-pod-12345 health
+-- expect:error --
+Error:
+-- expect:stderr --
+Error:
+-- expect:not:stdout --
+Error:
+
+
+-- test: partial failure keeps healthy pod output on stdout --
+-- command --
+kubectl-actuator --pod {{pod[0]}} --pod nonexistent-pod-12345 health
+-- expect:error --
+failed on 1 of 2 pods: nonexistent-pod-12345
+-- expect:stdout --
+[overall]
+-- expect:stderr --
+Error (nonexistent-pod-12345):
+-- expect:stderr --
+not found in namespace
+-- expect:not:stdout --
+Error:
+
+
+-- test: invalid output format is rejected --
+-- command --
+kubectl-actuator --pod {{pod}} health -o bogus
+-- expect:error --
+invalid output format "bogus", must be one of: wide, json, yaml

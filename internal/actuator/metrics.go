@@ -1,6 +1,10 @@
 package actuator
 
-import "net/url"
+import (
+	"fmt"
+	"net/url"
+	"strings"
+)
 
 func (c *actuatorClient) GetMetrics() (*MetricsListResponse, error) {
 	var metricsResponse MetricsListResponse
@@ -10,23 +14,38 @@ func (c *actuatorClient) GetMetrics() (*MetricsListResponse, error) {
 	return &metricsResponse, nil
 }
 
-func (c *actuatorClient) GetMetric(metricName string) (*MetricResponse, error) {
+// MetricPath builds the /metrics/{name} path, with tag=key:value query
+// parameters for drill-down when tags are given. Exported for the metrics
+// command's raw passthrough, which fetches the same path via GetRaw.
+func MetricPath(metricName string, tags []string) string {
 	path := "/metrics/" + url.PathEscape(metricName)
-	resp, err := c.httpClient.Get(path)
+	if len(tags) > 0 {
+		query := url.Values{}
+		for _, tag := range tags {
+			query.Add("tag", tag)
+		}
+		path += "?" + query.Encode()
+	}
+	return path
+}
+
+func (c *actuatorClient) GetMetric(metricName string, tags []string) (*MetricResponse, error) {
+	resp, err := c.httpClient.Get(MetricPath(metricName, tags))
 	if err != nil {
-		return nil, err
+		return nil, c.connectionError(err)
 	}
 
 	if resp.IsErrorStatus() {
-		if resp.StatusCode == 404 && c.isEndpointAccessible("/metrics") {
-			return nil, resourceNotFoundError("metric", metricName, resp.Status)
+		if resp.StatusCode == 400 && len(tags) > 0 {
+			return nil, fmt.Errorf("failed to get metric %q with tags %s: %s", metricName, strings.Join(tags, ", "), resp.Status)
 		}
-		return nil, endpointError("metrics", resp.Status, "failed to get metric")
+		return nil, c.resourceStatusError("metrics", resp.StatusCode, resp.Status, "failed to get metric",
+			resourceNotFoundError("metric", metricName, resp.Status))
 	}
 
 	var metricResponse MetricResponse
 	if err := parseJSON(resp.Body, &metricResponse); err != nil {
-		return nil, err
+		return nil, c.notJSONError(err, "failed to get metric")
 	}
 
 	return &metricResponse, nil

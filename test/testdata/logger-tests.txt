@@ -30,9 +30,29 @@ kubectl-actuator --pod {{pod}} logger
 com\.example\.testapp\s+INFO
 
 
+-- test: logger prefix filter with footer after table --
+-- command --
+kubectl-actuator --pod {{pod}} logger org.springframework
+-- expect:regex --
+LOGGER\s+LEVEL
+-- expect:regex --
+org\.springframework\.web\s+INFO
+-- expect:not --
+ROOT
+-- expect:regex --
+(?s)org\.springframework\.web.*non-matching loggers omitted
+
+
+-- test: loggers alias --
+-- command --
+kubectl-actuator --pod {{pod}} loggers
+-- expect:regex --
+LOGGER\s+LEVEL
+
+
 -- test: logger show all including effective levels --
 -- command --
-kubectl-actuator --pod {{pod}} logger --all-loggers
+kubectl-actuator --pod {{pod}} logger --all
 -- expect:regex --
 LOGGER\s+LEVEL
 -- expect:regex --
@@ -41,3 +61,42 @@ ROOT\s+INFO
 com\.example\.testapp\s+INFO
 -- expect:regex --
 \(effective\)
+
+
+-- test: logger listing shows groups --
+-- command --
+kubectl-actuator --pod {{pod}} logger
+-- expect:regex --
+GROUP\s+CONFIGURED\s+MEMBERS
+-- expect:regex --
+sql\s+-\s+org\.
+-- expect:regex --
+web\s+-\s+org\.springframework
+
+
+-- test: set and reset a logger group level --
+-- command --
+kubectl-actuator --pod {{pod}} logger web DEBUG
+-- expect --
+Logger "web" set to DEBUG
+-- command --
+kubectl-actuator --pod {{pod}} logger web
+-- expect:regex --
+web\s+DEBUG\s+org\.springframework
+-- command --
+kubectl-actuator --pod {{pod}} logger web RESET
+-- command --
+kubectl-actuator --pod {{pod}} logger
+-- expect:regex --
+web\s+-\s+org\.springframework
+
+
+-- test: logger prefix filter matches groups --
+-- command --
+kubectl-actuator --pod {{pod}} logger sql
+-- expect:regex --
+GROUP\s+CONFIGURED\s+MEMBERS
+-- expect:regex --
+sql\s+-\s+
+-- expect:not --
+web

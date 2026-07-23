@@ -2,14 +2,20 @@ package cmd
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"slices"
+	"sort"
+	"strings"
 
+	"github.com/deviceinsight/kubectl-actuator/internal/actuator"
 	"github.com/spf13/cobra"
 	"k8s.io/cli-runtime/pkg/genericclioptions"
 )
 
 type infoCommandOperations struct {
 	baseOperations
+	output string
 }
 
 func NewInfoCommand(configFlags *genericclioptions.ConfigFlags, podResolver PodResolver) *cobra.Command {
@@ -27,31 +33,35 @@ func NewInfoCommand(configFlags *genericclioptions.ConfigFlags, podResolver PodR
 
 Displays build information, git details, and other application
 information.`,
-		Args: cobra.NoArgs,
+		Example: `  # Show build and git info of a pod
+  kubectl actuator -p my-app-7d4b9c-xk2pq info
+
+  # Show info of all pods in a deployment, as JSON
+  kubectl actuator -d my-app info -o json`,
+		Args:              cobra.NoArgs,
+		ValidArgsFunction: cobra.NoFileCompletions,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			if err := operations.complete(cmd); err != nil {
+			if err := operations.validateFlags(); err != nil {
 				return err
 			}
-			if err := operations.validate(); err != nil {
-				return err
-			}
-			return RunForEachPod(cmd.Context(), operations.pods, "get info", operations.runForPod)
+			return operations.runEndpoint(cmd, "get info", operations.output, operations.structuredForPod, operations.runForPod)
 		},
 	}
+
+	addOutputFlag(cmd, &operations.output, "", OutputFormatJSON, OutputFormatYAML)
 
 	return cmd
 }
 
-func (o *infoCommandOperations) validate() error {
-	return o.validatePods()
+func (o *infoCommandOperations) validateFlags() error {
+	return validateOutputFormat(o.output, OutputFormatJSON, OutputFormatYAML)
 }
 
-func (o *infoCommandOperations) runForPod(ctx context.Context, podName string) error {
-	client, err := o.actuatorClientFactory.NewClient(ctx, podName)
-	if err != nil {
-		return err
-	}
+func (o *infoCommandOperations) structuredForPod(client actuator.Client) (json.RawMessage, error) {
+	return client.GetRaw("info")
+}
 
+func (o *infoCommandOperations) runForPod(ctx context.Context, client actuator.Client, podName string) error {
 	info, err := client.GetInfo()
 	if err != nil {
 		return err
@@ -62,86 +72,170 @@ func (o *infoCommandOperations) runForPod(ctx context.Context, podName string) e
 	return nil
 }
 
-func formatInfo(info map[string]interface{}) {
-	sections := []string{"app", "build", "git"}
+// curatedInfoSections are rendered first with dedicated layouts; all other
+// sections are rendered generically after them.
+var curatedInfoSections = []string{"app", "build", "git"}
+
+func formatInfo(info map[string]any) {
 	firstSection := true
 
-	for _, section := range sections {
-		if data, ok := info[section]; ok {
-			if !firstSection {
-				fmt.Println()
-			}
-			firstSection = false
-
-			switch section {
-			case "app":
-				formatAppSection(data)
-			case "build":
-				formatBuildSection(data)
-			case "git":
-				formatGitSection(data)
-			}
+	printSeparator := func() {
+		if !firstSection {
+			fmt.Println()
 		}
+		firstSection = false
+	}
+
+	for _, section := range curatedInfoSections {
+		data, ok := info[section]
+		if !ok {
+			continue
+		}
+		printSeparator()
+
+		switch section {
+		case "app":
+			formatAppSection(data)
+		case "build":
+			formatBuildSection(data)
+		case "git":
+			formatGitSection(data)
+		}
+	}
+
+	var remaining []string
+	for key := range info {
+		if !slices.Contains(curatedInfoSections, key) {
+			remaining = append(remaining, key)
+		}
+	}
+	sort.Strings(remaining)
+
+	for _, key := range remaining {
+		printSeparator()
+		formatGenericSection(key, info[key])
 	}
 }
 
-func formatAppSection(data interface{}) {
-	appMap, ok := data.(map[string]interface{})
+// formatGenericSection renders an info section this tool has no dedicated
+// layout for, e.g. Spring Boot's java/os info or custom InfoContributors.
+func formatGenericSection(key string, data any) {
+	fmt.Printf("%s:\n", sectionTitle(key))
+	if sectionMap, ok := data.(map[string]any); ok {
+		printGenericMap(sectionMap, "  ")
+		return
+	}
+	fmt.Printf("  %s\n", formatGenericValue(data))
+}
+
+func printGenericMap(section map[string]any, indent string) {
+	keys := make([]string, 0, len(section))
+	for key := range section {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+
+	labelWidth := 0
+	for _, key := range keys {
+		if _, nested := section[key].(map[string]any); nested {
+			continue
+		}
+		if width := len(titleCaseKey(key)) + 1; width > labelWidth {
+			labelWidth = width
+		}
+	}
+
+	for _, key := range keys {
+		value := section[key]
+		if nested, ok := value.(map[string]any); ok {
+			fmt.Printf("%s%s:\n", indent, titleCaseKey(key))
+			printGenericMap(nested, indent+"  ")
+			continue
+		}
+		fmt.Printf("%s%-*s%s\n", indent, labelWidth+2, titleCaseKey(key)+":", formatGenericValue(value))
+	}
+}
+
+func formatGenericValue(value any) string {
+	if items, ok := value.([]any); ok {
+		parts := make([]string, 0, len(items))
+		for _, item := range items {
+			parts = append(parts, fmt.Sprintf("%v", item))
+		}
+		return strings.Join(parts, ", ")
+	}
+	return fmt.Sprintf("%v", value)
+}
+
+func sectionTitle(key string) string {
+	if strings.EqualFold(key, "os") {
+		return "OS"
+	}
+	return titleCaseKey(key)
+}
+
+func formatAppSection(data any) {
+	appMap, ok := data.(map[string]any)
 	if !ok {
 		return
 	}
 
 	fmt.Println("Application:")
 	if name, ok := appMap["name"].(string); ok {
-		fmt.Printf("  Name:         %s\n", name)
+		fmt.Printf("  %-14s%s\n", "Name:", name)
 	}
 	if description, ok := appMap["description"].(string); ok {
-		fmt.Printf("  Description:  %s\n", description)
+		fmt.Printf("  %-14s%s\n", "Description:", description)
 	}
 
-	for key, value := range appMap {
+	extraKeys := make([]string, 0, len(appMap))
+	for key := range appMap {
 		if key != "name" && key != "description" {
-			fmt.Printf("  %s:  %v\n", capitalizeFirst(key), value)
+			extraKeys = append(extraKeys, key)
 		}
+	}
+	sort.Strings(extraKeys)
+	for _, key := range extraKeys {
+		fmt.Printf("  %-14s%v\n", capitalizeFirst(key)+":", appMap[key])
 	}
 }
 
-func formatBuildSection(data interface{}) {
-	buildMap, ok := data.(map[string]interface{})
+func formatBuildSection(data any) {
+	buildMap, ok := data.(map[string]any)
 	if !ok {
 		return
 	}
 
 	fmt.Println("Build:")
 	if group, ok := buildMap["group"].(string); ok {
-		fmt.Printf("  Group:        %s\n", group)
+		fmt.Printf("  %-14s%s\n", "Group:", group)
 	}
 	if artifact, ok := buildMap["artifact"].(string); ok {
-		fmt.Printf("  Artifact:     %s\n", artifact)
+		fmt.Printf("  %-14s%s\n", "Artifact:", artifact)
 	}
 	if name, ok := buildMap["name"].(string); ok && name != buildMap["artifact"] {
-		fmt.Printf("  Name:         %s\n", name)
+		fmt.Printf("  %-14s%s\n", "Name:", name)
 	}
 	if version, ok := buildMap["version"].(string); ok {
-		fmt.Printf("  Version:      %s\n", version)
+		fmt.Printf("  %-14s%s\n", "Version:", version)
 	}
 	if time, ok := buildMap["time"]; ok {
-		fmt.Printf("  Time:         %v\n", time)
+		fmt.Printf("  %-14s%v\n", "Time:", time)
 	}
 }
 
-func formatGitSection(data interface{}) {
-	gitMap, ok := data.(map[string]interface{})
+func formatGitSection(data any) {
+	gitMap, ok := data.(map[string]any)
 	if !ok {
 		return
 	}
 
 	fmt.Println("Git:")
 	if branch, ok := gitMap["branch"].(string); ok {
-		fmt.Printf("  Branch:       %s\n", branch)
+		fmt.Printf("  %-14s%s\n", "Branch:", branch)
 	}
 
-	if commit, ok := gitMap["commit"].(map[string]interface{}); ok {
+	if commit, ok := gitMap["commit"].(map[string]any); ok {
 		commitID := ""
 		commitTime := ""
 
@@ -155,9 +249,9 @@ func formatGitSection(data interface{}) {
 
 		if commitID != "" {
 			if commitTime != "" {
-				fmt.Printf("  Commit:       %s (%s)\n", commitID, commitTime)
+				fmt.Printf("  %-14s%s (%s)\n", "Commit:", commitID, commitTime)
 			} else {
-				fmt.Printf("  Commit:       %s\n", commitID)
+				fmt.Printf("  %-14s%s\n", "Commit:", commitID)
 			}
 		}
 	}

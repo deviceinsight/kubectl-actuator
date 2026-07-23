@@ -2,7 +2,10 @@ package cmd
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"net/url"
+	"os"
 	"sort"
 	"strings"
 
@@ -10,6 +13,8 @@ import (
 	"github.com/spf13/cobra"
 	"k8s.io/cli-runtime/pkg/genericclioptions"
 )
+
+const maxEnvValueLength = 100
 
 type envCommandOperations struct {
 	baseOperations
@@ -27,55 +32,111 @@ func NewEnvCommand(configFlags *genericclioptions.ConfigFlags, podResolver PodRe
 	}
 
 	cmd := &cobra.Command{
-		Use:   "env [property-name]",
+		Use:   "env [PROPERTY]",
 		Short: "Get environment properties and configuration",
 		Long: `Get environment properties and configuration from Spring Boot Actuator.
 
 Without arguments, shows all property sources and active profiles.
-With a property name argument, shows details for that specific property.`,
+With a property name argument, shows details for that specific property,
+including its full untruncated value.`,
+		Example: `  # Show all properties of a deployment's pods
+  kubectl actuator -d my-app env
+
+  # Show properties whose name contains 'spring'
+  kubectl actuator -d my-app env -f spring
+
+  # Show one property with its full value and origin
+  kubectl actuator -d my-app env spring.datasource.url
+
+  # List matching property names only
+  kubectl actuator -d my-app env -f datasource -o name`,
 		Args: cobra.MaximumNArgs(1),
+		ValidArgsFunction: func(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
+			if len(args) > 0 {
+				return nil, cobra.ShellCompDirectiveNoFileComp
+			}
+			client, ok := operations.completionClient(cmd)
+			if !ok {
+				return nil, cobra.ShellCompDirectiveNoFileComp
+			}
+			envResponse, err := client.GetEnv()
+			if err != nil {
+				return nil, cobra.ShellCompDirectiveNoFileComp
+			}
+			return collectPropertyNames(envResponse, ""), cobra.ShellCompDirectiveNoFileComp
+		},
 		RunE: func(cmd *cobra.Command, args []string) error {
-			if err := operations.complete(cmd, args); err != nil {
+			if len(args) >= 1 {
+				operations.propertyName = args[0]
+			}
+			if err := operations.validateFlags(); err != nil {
 				return err
 			}
-			if err := operations.validate(); err != nil {
-				return err
-			}
-			return RunForEachPod(cmd.Context(), operations.pods, "get env", operations.runForPod)
+			return operations.runEndpoint(cmd, "get env", operations.output, operations.structuredForPod, operations.runForPod)
 		},
 	}
 
-	cmd.Flags().StringVarP(&operations.filter, "filter", "f", "", "Filter properties by name pattern")
-	cmd.Flags().StringVarP(&operations.output, "output", "o", "", "Output format. One of: name")
+	cmd.Flags().StringVarP(&operations.filter, "filter", "f", "", "Filter properties by name (case-insensitive substring)")
+	addOutputFlag(cmd, &operations.output, "", OutputFormatName, OutputFormatJSON, OutputFormatYAML)
+	markNoFileFlags(cmd, "filter")
 
 	return cmd
 }
 
-func (o *envCommandOperations) complete(cmd *cobra.Command, args []string) error {
-	if err := o.baseOperations.complete(cmd); err != nil {
+func (o *envCommandOperations) validateFlags() error {
+	if err := validateOutputFormat(o.output, OutputFormatName, OutputFormatJSON, OutputFormatYAML); err != nil {
 		return err
 	}
-
-	if len(args) >= 1 {
-		o.propertyName = args[0]
+	if o.propertyName != "" && o.filter != "" {
+		return fmt.Errorf("--filter cannot be combined with a property name argument")
 	}
-
 	return nil
 }
 
-func (o *envCommandOperations) validate() error {
-	if err := o.validatePods(); err != nil {
-		return err
+func (o *envCommandOperations) structuredForPod(client actuator.Client) (json.RawMessage, error) {
+	if o.propertyName != "" {
+		return client.GetRaw("env/" + url.PathEscape(o.propertyName))
 	}
-	return validateOutputFormat(o.output, OutputFormatName)
+	data, err := client.GetRaw("env")
+	if err != nil {
+		return nil, err
+	}
+	return filterEnvJSON(data, o.filter)
 }
 
-func (o *envCommandOperations) runForPod(ctx context.Context, podName string) error {
-	client, err := o.actuatorClientFactory.NewClient(ctx, podName)
-	if err != nil {
-		return err
+// filterEnvJSON applies the property name filter to the raw /env response,
+// keeping the propertySources nesting and all other fields intact.
+func filterEnvJSON(data json.RawMessage, filter string) (json.RawMessage, error) {
+	if filter == "" {
+		return data, nil
 	}
+	tree, err := decodeTree(data)
+	if err != nil {
+		return nil, err
+	}
+	sources, ok := tree["propertySources"].([]any)
+	if !ok {
+		return data, nil
+	}
+	for _, sourceValue := range sources {
+		sourceMap, ok := sourceValue.(map[string]any)
+		if !ok {
+			continue
+		}
+		properties, ok := sourceMap["properties"].(map[string]any)
+		if !ok {
+			continue
+		}
+		for name := range properties {
+			if !matchesFilter(name, filter) {
+				delete(properties, name)
+			}
+		}
+	}
+	return encodeTree(tree)
+}
 
+func (o *envCommandOperations) runForPod(ctx context.Context, client actuator.Client, podName string) error {
 	if o.propertyName != "" {
 		return o.displayProperty(client)
 	}
@@ -94,11 +155,19 @@ func (o *envCommandOperations) displayEnv(client actuator.Client) error {
 	return o.displayEnvTable(envResponse)
 }
 
-func (o *envCommandOperations) displayEnvNames(envResponse *actuator.EnvResponse) error {
+// printNoPropertiesMatch reports an empty filter result on stderr, so pipes
+// stay clean and "no match" is distinguishable from an empty environment.
+func printNoPropertiesMatch(filter string) {
+	_, _ = fmt.Fprintf(os.Stderr, "No properties match filter %q\n", filter)
+}
+
+// collectPropertyNames returns the deduplicated, sorted property names of
+// all property sources, restricted to those matching the filter.
+func collectPropertyNames(envResponse *actuator.EnvResponse, filter string) []string {
 	propertyNamesSet := make(map[string]struct{})
 	for _, source := range envResponse.PropertySources {
 		for propName := range source.Properties {
-			if o.filter == "" || strings.Contains(propName, o.filter) {
+			if matchesFilter(propName, filter) {
 				propertyNamesSet[propName] = struct{}{}
 			}
 		}
@@ -109,6 +178,16 @@ func (o *envCommandOperations) displayEnvNames(envResponse *actuator.EnvResponse
 		propertyNames = append(propertyNames, propName)
 	}
 	sort.Strings(propertyNames)
+	return propertyNames
+}
+
+func (o *envCommandOperations) displayEnvNames(envResponse *actuator.EnvResponse) error {
+	propertyNames := collectPropertyNames(envResponse, o.filter)
+
+	if len(propertyNames) == 0 && o.filter != "" {
+		printNoPropertiesMatch(o.filter)
+		return nil
+	}
 
 	for _, propName := range propertyNames {
 		fmt.Println(propName)
@@ -117,38 +196,72 @@ func (o *envCommandOperations) displayEnvNames(envResponse *actuator.EnvResponse
 }
 
 func (o *envCommandOperations) displayEnvTable(envResponse *actuator.EnvResponse) error {
-	fmt.Printf("Active Profiles: %v\n\n", envResponse.ActiveProfiles)
+	type tableEntry struct {
+		name    string
+		details actuator.PropertyDetails
+		source  string
+	}
+
+	// Property sources keep their response order, which reflects Spring's
+	// real precedence; properties within a source are sorted so output is
+	// stable across runs.
+	var entries []tableEntry
+	for _, source := range envResponse.PropertySources {
+		names := make([]string, 0, len(source.Properties))
+		for propName := range source.Properties {
+			if matchesFilter(propName, o.filter) {
+				names = append(names, propName)
+			}
+		}
+		sort.Strings(names)
+		for _, propName := range names {
+			entries = append(entries, tableEntry{name: propName, details: source.Properties[propName], source: source.Name})
+		}
+	}
+
+	if len(entries) == 0 && o.filter != "" {
+		printNoPropertiesMatch(o.filter)
+		return nil
+	}
+
+	profiles := strings.Join(envResponse.ActiveProfiles, ", ")
+	if profiles == "" {
+		profiles = "-"
+	}
+	fmt.Printf("Active Profiles: %s\n\n", profiles)
 
 	w := newTableWriter()
 	defer func() { _ = w.Flush() }()
 
 	_, _ = fmt.Fprintln(w, "NAME\tVALUE\tORIGIN")
 
-	for _, source := range envResponse.PropertySources {
-		for propName, propDetails := range source.Properties {
-			if o.filter != "" && !strings.Contains(propName, o.filter) {
-				continue
-			}
-
-			origin := propDetails.Origin
-			if origin == "" {
-				origin = source.Name
-			}
-
-			value := escapeValue(fmt.Sprintf("%v", propDetails.Value))
-
-			_, _ = fmt.Fprintf(w, "%s\t%s\t%s\n", propName, value, origin)
+	for _, entry := range entries {
+		origin := entry.details.Origin
+		if origin == "" {
+			origin = entry.source
 		}
+
+		value := truncateString(escapeValue(fmt.Sprintf("%v", entry.details.Value)), maxEnvValueLength)
+
+		_, _ = fmt.Fprintf(w, "%s\t%s\t%s\n", entry.name, value, origin)
 	}
 
 	return nil
 }
 
-func escapeValue(s string) string {
-	s = strings.ReplaceAll(s, "\n", "\\n")
-	s = strings.ReplaceAll(s, "\r", "\\r")
-	s = strings.ReplaceAll(s, "\t", "\\t")
-	return s
+// propertyOrigin returns the first origin recorded in the property's
+// sources; Spring reports one only for sources that track origins.
+func propertyOrigin(sources []actuator.PropertySourceReference) string {
+	for _, source := range sources {
+		propMap, ok := source.Property.(map[string]any)
+		if !ok {
+			continue
+		}
+		if origin, exists := propMap["origin"]; exists {
+			return fmt.Sprintf("%v", origin)
+		}
+	}
+	return ""
 }
 
 func (o *envCommandOperations) displayProperty(client actuator.Client) error {
@@ -159,19 +272,7 @@ func (o *envCommandOperations) displayProperty(client actuator.Client) error {
 
 	value := escapeValue(fmt.Sprintf("%v", property.Property.Value))
 	source := property.Property.Source
-
-	// Find the origin from the property sources if available
-	origin := ""
-	for _, ps := range property.PropertySources {
-		if ps.Property != nil {
-			if propMap, ok := ps.Property.(map[string]interface{}); ok {
-				if o, exists := propMap["origin"]; exists {
-					origin = fmt.Sprintf("%v", o)
-					break
-				}
-			}
-		}
-	}
+	origin := propertyOrigin(property.PropertySources)
 
 	w := newTableWriter()
 	defer func() { _ = w.Flush() }()

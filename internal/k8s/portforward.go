@@ -19,7 +19,7 @@ import (
 
 var nextPortForwardRequestID uint64
 
-func (c *Connection) CreateHttpTransport(podName string, podPort int) (*http.Transport, error) {
+func (c *Connection) CreateHTTPTransport(podName string, podPort int) (*http.Transport, error) {
 	portForwardURL := c.restClient.Post().
 		Resource("pods").
 		Namespace(c.namespace).
@@ -31,49 +31,66 @@ func (c *Connection) CreateHttpTransport(podName string, podPort int) (*http.Tra
 		return nil, err
 	}
 
+	dialer := &podDialer{
+		spdy:    spdy.NewDialer(upgrader, &http.Client{Transport: baseTransport}, "POST", portForwardURL),
+		podName: podName,
+		podPort: podPort,
+	}
 	return &http.Transport{
 		DisableKeepAlives: true,
-		DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
-			dialer := spdy.NewDialer(upgrader, &http.Client{Transport: baseTransport}, "POST", portForwardURL)
-			conn, _, err := dialer.Dial("portforward.k8s.io")
-			if err != nil {
-				return nil, fmt.Errorf("unable to dial portforward protocol: %w", err)
-			}
-
-			id := strconv.FormatUint(atomic.AddUint64(&nextPortForwardRequestID, 1), 10)
-
-			headers := http.Header{}
-			headers.Set(corev1.StreamType, corev1.StreamTypeError)
-			headers.Set(corev1.PortHeader, strconv.Itoa(podPort))
-			headers.Set(corev1.PortForwardRequestIDHeader, id)
-
-			errStream, err := conn.CreateStream(headers)
-			if err != nil {
-				_ = conn.Close()
-				return nil, fmt.Errorf("unable to open error stream: %w", err)
-			}
-
-			headers.Set(corev1.StreamType, corev1.StreamTypeData)
-			dataStream, err := conn.CreateStream(headers)
-			if err != nil {
-				_ = errStream.Close()
-				_ = conn.Close()
-				return nil, fmt.Errorf("unable to open data stream: %w", err)
-			}
-
-			pfc := &portForwardConnection{
-				stream:    dataStream,
-				errStream: errStream,
-				conn:      conn,
-				local:     portForwardAddr{network: network, addr: "127.0.0.1:0"},
-				remote:    portForwardAddr{network: network, addr: fmt.Sprintf("pod/%s:%d", podName, podPort)},
-			}
-
-			pfc.startErrorStreamMonitor()
-
-			return pfc, nil
-		},
+		DialContext:       dialer.DialContext,
 	}, nil
+}
+
+// podDialer opens one port-forward connection per dial: an SPDY session
+// carrying an error stream and a data stream, wrapped as a net.Conn.
+type podDialer struct {
+	spdy    httpstream.Dialer
+	podName string
+	podPort int
+}
+
+func (d *podDialer) DialContext(_ context.Context, network, _ string) (net.Conn, error) {
+	conn, _, err := d.spdy.Dial("portforward.k8s.io")
+	if err != nil {
+		return nil, fmt.Errorf("unable to dial portforward protocol: %w", err)
+	}
+
+	id := strconv.FormatUint(atomic.AddUint64(&nextPortForwardRequestID, 1), 10)
+
+	headers := http.Header{}
+	headers.Set(corev1.StreamType, corev1.StreamTypeError)
+	headers.Set(corev1.PortHeader, strconv.Itoa(d.podPort))
+	headers.Set(corev1.PortForwardRequestIDHeader, id)
+
+	errStream, err := conn.CreateStream(headers)
+	if err != nil {
+		_ = conn.Close()
+		return nil, fmt.Errorf("unable to open error stream: %w", err)
+	}
+
+	headers.Set(corev1.StreamType, corev1.StreamTypeData)
+	dataStream, err := conn.CreateStream(headers)
+	if err != nil {
+		_ = errStream.Close()
+		_ = conn.Close()
+		return nil, fmt.Errorf("unable to open data stream: %w", err)
+	}
+
+	pfc := &portForwardConnection{
+		stream:    dataStream,
+		errStream: errStream,
+		conn:      conn,
+		// There is no local socket - the net.Conn is synthesized over SPDY
+		// streams - so LocalAddr reports a loopback placeholder.
+		local:   portForwardAddr{network: network, addr: "127.0.0.1:0"},
+		remote:  portForwardAddr{network: network, addr: fmt.Sprintf("pod/%s:%d", d.podName, d.podPort)},
+		errDone: make(chan struct{}),
+	}
+
+	pfc.startErrorStreamMonitor()
+
+	return pfc, nil
 }
 
 type portForwardConnection struct {
@@ -87,6 +104,9 @@ type portForwardConnection struct {
 	readDeadline  time.Time
 	writeDeadline time.Time
 	wg            sync.WaitGroup
+	bytesRead     atomic.Int64
+	errMsg        string
+	errDone       chan struct{}
 }
 
 func (pfc *portForwardConnection) Read(bytes []byte) (n int, err error) {
@@ -94,9 +114,30 @@ func (pfc *portForwardConnection) Read(bytes []byte) (n int, err error) {
 	deadline := pfc.readDeadline
 	pfc.mu.Unlock()
 
-	return pfc.executeWithDeadline(deadline, func() (int, error) {
-		return pfc.stream.Read(bytes)
-	})
+	if deadline.IsZero() {
+		n, err = pfc.stream.Read(bytes)
+	} else {
+		// A timed-out worker keeps reading (see executeWithDeadline), so it
+		// gets a buffer of its own; bytes is only written while the caller is
+		// still waiting here.
+		buf := make([]byte, len(bytes))
+		n, err = pfc.executeWithDeadline(deadline, func() (int, error) {
+			return pfc.stream.Read(buf)
+		})
+		copy(bytes, buf[:n])
+	}
+	if n > 0 {
+		pfc.bytesRead.Add(int64(n))
+	}
+	// A connection that errors before delivering a single byte was most
+	// likely rejected pod-side; the kubelet reports the real cause on the
+	// error stream while the data stream just closes.
+	if err != nil && pfc.bytesRead.Load() == 0 {
+		if msg := pfc.portForwardError(); msg != "" {
+			return n, fmt.Errorf("%s", msg)
+		}
+	}
+	return n, err
 }
 
 func (pfc *portForwardConnection) Write(bytes []byte) (n int, err error) {
@@ -104,8 +145,14 @@ func (pfc *portForwardConnection) Write(bytes []byte) (n int, err error) {
 	deadline := pfc.writeDeadline
 	pfc.mu.Unlock()
 
-	return pfc.executeWithDeadline(deadline, func() (int, error) {
+	if deadline.IsZero() {
 		return pfc.stream.Write(bytes)
+	}
+	// A timed-out worker keeps writing (see executeWithDeadline), so it gets a
+	// copy; the caller is free to reuse bytes as soon as this returns.
+	buf := append([]byte(nil), bytes...)
+	return pfc.executeWithDeadline(deadline, func() (int, error) {
+		return pfc.stream.Write(buf)
 	})
 }
 
@@ -154,11 +201,12 @@ func (pfc *portForwardConnection) SetWriteDeadline(t time.Time) error {
 	return nil
 }
 
+// executeWithDeadline runs operation, giving up when the deadline passes. On
+// timeout the worker goroutine stays blocked in operation until the stream
+// closes. This is an accepted leak, since a timed-out invocation exits shortly
+// after; because the worker can outlive the call, operation must only touch
+// buffers it owns, never the caller's.
 func (pfc *portForwardConnection) executeWithDeadline(deadline time.Time, operation func() (int, error)) (int, error) {
-	if deadline.IsZero() {
-		return operation()
-	}
-
 	if time.Now().After(deadline) {
 		return 0, os.ErrDeadlineExceeded
 	}
@@ -182,18 +230,34 @@ func (pfc *portForwardConnection) executeWithDeadline(deadline time.Time, operat
 	}
 }
 
+// startErrorStreamMonitor captures the kubelet's port-forward error message,
+// if any, so the failing Read can return it as the actual cause instead of a
+// bare EOF racing a stderr line.
 func (pfc *portForwardConnection) startErrorStreamMonitor() {
 	pfc.wg.Add(1)
 	go func() {
 		defer pfc.wg.Done()
+		defer close(pfc.errDone)
 		msg, readErr := io.ReadAll(pfc.errStream)
-		switch {
-		case readErr != nil && readErr != io.EOF:
-			_, _ = fmt.Fprintf(os.Stderr, "port-forward: error reading error stream: %v\n", readErr)
-		case len(msg) > 0:
-			_, _ = fmt.Fprintf(os.Stderr, "port-forward error: %s\n", string(msg))
+		if readErr == nil {
+			pfc.mu.Lock()
+			pfc.errMsg = string(msg)
+			pfc.mu.Unlock()
 		}
 	}()
+}
+
+// portForwardError returns the error-stream message, waiting briefly for the
+// monitor since the kubelet writes it at about the same time the data stream
+// closes. Only called on a failed connection, never on the happy path.
+func (pfc *portForwardConnection) portForwardError() string {
+	select {
+	case <-pfc.errDone:
+	case <-time.After(500 * time.Millisecond):
+	}
+	pfc.mu.Lock()
+	defer pfc.mu.Unlock()
+	return pfc.errMsg
 }
 
 type portForwardAddr struct {

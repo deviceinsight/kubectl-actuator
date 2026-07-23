@@ -17,6 +17,17 @@ ping
 UP
 
 
+-- test: health wide shows details --
+-- command --
+kubectl-actuator --pod {{pod}} health -o wide
+-- expect:regex --
+COMPONENT\s+STATUS\s+DETAILS
+-- expect --
+diskSpace
+-- expect --
+"total"
+
+
 -- test: health check deployment --
 -- command --
 kubectl-actuator --deployment {{deployment}} health
@@ -58,3 +69,28 @@ UP
 [overall]
 -- expect --
 UP
+
+
+-- test: health shows groups --
+-- command --
+kubectl-actuator --pod {{pod}} health
+-- expect --
+Groups:
+-- expect --
+liveness
+
+
+-- test: health group query --
+-- command --
+kubectl-actuator --pod {{pod}} health liveness
+-- expect --
+[overall]
+-- expect --
+UP
+
+
+-- test: health unknown group names the group --
+-- command --
+kubectl-actuator --pod {{pod}} health nonexistentgroup
+-- expect:error --
+no health group or component named "nonexistentgroup"

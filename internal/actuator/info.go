@@ -1,7 +1,7 @@
 package actuator
 
-func (c *actuatorClient) GetInfo() (map[string]interface{}, error) {
-	var infoResponse map[string]interface{}
+func (c *actuatorClient) GetInfo() (map[string]any, error) {
+	var infoResponse map[string]any
 	if err := c.getAndParse("/info", "info", "failed to get info", &infoResponse); err != nil {
 		return nil, err
 	}

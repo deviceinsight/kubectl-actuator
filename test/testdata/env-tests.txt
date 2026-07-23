@@ -29,6 +29,13 @@ VALUE:
 SOURCE:
 
 
+-- test: env nonexistent property --
+-- command --
+kubectl-actuator --pod {{pod}} env nonexistent.property.xyz
+-- expect:error --
+property "nonexistent.property.xyz" not found
+
+
 -- test: env filter by pattern --
 -- command --
 kubectl-actuator --pod {{pod}} env --filter spring.application
@@ -40,3 +47,10 @@ spring.application.version
 spring.application.pid
 -- expect:not --
 java.version
+
+
+-- test: env rejects filter combined with property argument --
+-- command --
+kubectl-actuator --pod {{pod}} env spring.application.name -f spring
+-- expect:error --
+--filter cannot be combined with a property name argument

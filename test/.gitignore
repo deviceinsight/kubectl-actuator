@@ -10,7 +10,3 @@ spring-app/target/
 spring-app/.mvn/
 spring-app/mvnw
 spring-app/mvnw.cmd
-
-# Temp files
-kubeconfig-*.yaml
-/tmp/

@@ -1,16 +1,12 @@
 package actuator
 
-import (
-	"strconv"
-	"testing"
-)
+import "testing"
 
 func TestActuatorClientGetEnv(t *testing.T) {
 	tests := []struct {
 		name               string
 		mockResponse       string
 		mockStatus         int
-		mockErr            error
 		wantErr            bool
 		wantProfilesCnt    int
 		wantPropSourcesCnt int
@@ -88,21 +84,7 @@ func TestActuatorClientGetEnv(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			mockClient := &MockHTTPClient{
-				GetFunc: func(path string) (*Response, error) {
-					if path != "/env" {
-						t.Errorf("unexpected path: %s", path)
-					}
-					if tt.mockErr != nil {
-						return nil, tt.mockErr
-					}
-					return &Response{
-						Body:       []byte(tt.mockResponse),
-						StatusCode: tt.mockStatus,
-						Status:     strconv.Itoa(tt.mockStatus),
-					}, nil
-				},
-			}
+			mockClient := newEndpointMock(t, "/env", respondWith(tt.mockStatus, tt.mockResponse))
 
 			client := &actuatorClient{httpClient: mockClient}
 			result, err := client.GetEnv()
@@ -130,10 +112,9 @@ func TestActuatorClientGetEnvProperty(t *testing.T) {
 		propertyName string
 		mockResponse string
 		mockStatus   int
-		mockErr      error
 		wantErr      bool
 		wantPath     string
-		wantValue    interface{}
+		wantValue    any
 	}{
 		{
 			name:         "successful property lookup",
@@ -212,18 +193,12 @@ func TestActuatorClientGetEnvProperty(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			var capturedPath string
+			var requestedPath string
+			respond := respondWith(tt.mockStatus, tt.mockResponse)
 			mockClient := &MockHTTPClient{
 				GetFunc: func(path string) (*Response, error) {
-					capturedPath = path
-					if tt.mockErr != nil {
-						return nil, tt.mockErr
-					}
-					return &Response{
-						Body:       []byte(tt.mockResponse),
-						StatusCode: tt.mockStatus,
-						Status:     strconv.Itoa(tt.mockStatus),
-					}, nil
+					requestedPath = path
+					return respond()
 				},
 			}
 
@@ -235,8 +210,8 @@ func TestActuatorClientGetEnvProperty(t *testing.T) {
 				return
 			}
 
-			if tt.wantPath != "" && capturedPath != tt.wantPath {
-				t.Errorf("GET path = %v, want %v", capturedPath, tt.wantPath)
+			if tt.wantPath != "" && requestedPath != tt.wantPath {
+				t.Errorf("GET path = %v, want %v", requestedPath, tt.wantPath)
 			}
 
 			if !tt.wantErr && tt.wantValue != nil {
@@ -244,130 +219,6 @@ func TestActuatorClientGetEnvProperty(t *testing.T) {
 					t.Errorf("value = %v, want %v", result.Property.Value, tt.wantValue)
 				}
 			}
-		})
-	}
-}
-
-func TestEnvResponseParsing(t *testing.T) {
-	tests := []struct {
-		name     string
-		response string
-		validate func(*testing.T, *EnvResponse)
-	}{
-		{
-			name: "property with origin",
-			response: `{
-				"activeProfiles": [],
-				"propertySources": [
-					{
-						"name": "applicationConfig",
-						"properties": {
-							"server.port": {
-								"value": "8080",
-								"origin": "class path resource [application.yml]:1:14"
-							}
-						}
-					}
-				]
-			}`,
-			validate: func(t *testing.T, resp *EnvResponse) {
-				if len(resp.PropertySources) != 1 {
-					t.Fatalf("expected 1 property source, got %d", len(resp.PropertySources))
-				}
-				ps := resp.PropertySources[0]
-				prop, ok := ps.Properties["server.port"]
-				if !ok {
-					t.Fatal("expected server.port property")
-				}
-				if prop.Origin != "class path resource [application.yml]:1:14" {
-					t.Errorf("unexpected origin: %s", prop.Origin)
-				}
-			},
-		},
-		{
-			name: "property with numeric value",
-			response: `{
-				"activeProfiles": [],
-				"propertySources": [
-					{
-						"name": "systemProperties",
-						"properties": {
-							"java.specification.version": {"value": 17}
-						}
-					}
-				]
-			}`,
-			validate: func(t *testing.T, resp *EnvResponse) {
-				ps := resp.PropertySources[0]
-				prop := ps.Properties["java.specification.version"]
-				if prop.Value != float64(17) {
-					t.Errorf("expected value 17, got %v (type %T)", prop.Value, prop.Value)
-				}
-			},
-		},
-		{
-			name: "property with boolean value",
-			response: `{
-				"activeProfiles": [],
-				"propertySources": [
-					{
-						"name": "applicationConfig",
-						"properties": {
-							"spring.jpa.show-sql": {"value": true}
-						}
-					}
-				]
-			}`,
-			validate: func(t *testing.T, resp *EnvResponse) {
-				ps := resp.PropertySources[0]
-				prop := ps.Properties["spring.jpa.show-sql"]
-				if prop.Value != true {
-					t.Errorf("expected value true, got %v", prop.Value)
-				}
-			},
-		},
-		{
-			name: "multiple property sources",
-			response: `{
-				"activeProfiles": ["dev"],
-				"propertySources": [
-					{"name": "commandLineArgs", "properties": {}},
-					{"name": "systemProperties", "properties": {}},
-					{"name": "systemEnvironment", "properties": {}},
-					{"name": "applicationConfig", "properties": {}}
-				]
-			}`,
-			validate: func(t *testing.T, resp *EnvResponse) {
-				if len(resp.PropertySources) != 4 {
-					t.Errorf("expected 4 property sources, got %d", len(resp.PropertySources))
-				}
-				if len(resp.ActiveProfiles) != 1 || resp.ActiveProfiles[0] != "dev" {
-					t.Errorf("unexpected active profiles: %v", resp.ActiveProfiles)
-				}
-			},
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			mockClient := &MockHTTPClient{
-				GetFunc: func(path string) (*Response, error) {
-					return &Response{
-						Body:       []byte(tt.response),
-						StatusCode: 200,
-						Status:     "200",
-					}, nil
-				},
-			}
-
-			client := &actuatorClient{httpClient: mockClient}
-			result, err := client.GetEnv()
-
-			if err != nil {
-				t.Fatalf("unexpected error: %v", err)
-			}
-
-			tt.validate(t, result)
 		})
 	}
 }

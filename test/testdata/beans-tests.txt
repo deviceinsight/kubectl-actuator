@@ -30,8 +30,10 @@ testActuatorApplication
 -- test: beans with no results --
 -- command --
 kubectl-actuator --pod {{pod}} beans --filter nonexistentbean12345
--- expect --
-No beans matching filter: nonexistentbean12345
+-- expect:stderr --
+No beans match filter "nonexistentbean12345"
+-- expect:not:stdout --
+No beans
 
 
 -- test: beans output name with filter --
@@ -41,6 +43,8 @@ kubectl-actuator --pod {{pod}} beans --filter testScheduled --output name
 testScheduledTasks
 -- expect:not --
 testActuatorApplication
+-- expect:not:stdout --
+Total matching
 
 
 -- test: beans output wide format --

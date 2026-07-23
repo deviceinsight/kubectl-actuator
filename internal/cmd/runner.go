@@ -2,42 +2,66 @@ package cmd
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"io"
+	"os"
+	"strings"
+
+	"github.com/deviceinsight/kubectl-actuator/internal/actuator"
 )
 
-// PodFunc is a function that processes a single pod and returns an error if it fails.
-type PodFunc func(ctx context.Context, pod string) error
+// PodFunc processes a single pod using a ready actuator client.
+type PodFunc func(ctx context.Context, client actuator.Client, podName string) error
 
-// RunForEachPod executes the given function for each pod, handling context cancellation,
-// pod headers for multi-pod output, and error aggregation.
-// Returns an error with the count of failed pods if any pod fails.
-func RunForEachPod(ctx context.Context, pods []string, action string, fn PodFunc) error {
-	size := len(pods)
+// runForEachPod executes fn for each selected pod with a ready actuator
+// client, printing pod headers for multi-pod output and aggregating failures.
+// Per-pod errors go to stderr so stdout carries only command output; a
+// single-pod failure is returned directly so it is reported exactly once.
+// An interrupt stops the loop immediately and is never counted as a pod
+// failure.
+func (b *baseOperations) runForEachPod(ctx context.Context, action string, fn PodFunc) error {
+	return b.runForEachPodTo(ctx, os.Stdout, action, fn)
+}
+
+// runForEachPodTo is runForEachPod with the pod headers and separators sent
+// to headerDst; download commands pass stderr so stdout carries nothing but
+// payload data.
+func (b *baseOperations) runForEachPodTo(ctx context.Context, headerDst io.Writer, action string, fn PodFunc) error {
+	size := len(b.pods)
 	var failedPods []string
 
-	for i, pod := range pods {
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		default:
+	for i, pod := range b.pods {
+		if ctx.Err() != nil {
+			return ErrInterrupted
 		}
 
 		if size > 1 {
-			fmt.Printf("%s:\n", pod)
+			_, _ = fmt.Fprintf(headerDst, "%s:\n", pod)
 		}
 
-		if err := fn(ctx, pod); err != nil {
-			fmt.Printf("Error: %v\n", err)
+		client, err := b.actuatorClientFactory.NewClient(ctx, pod)
+		if err == nil {
+			err = fn(ctx, client, pod)
+		}
+		if err != nil {
+			if errors.Is(err, context.Canceled) {
+				return ErrInterrupted
+			}
+			if size == 1 {
+				return err
+			}
+			_, _ = fmt.Fprintf(os.Stderr, "Error (%s): %v\n", pod, err)
 			failedPods = append(failedPods, pod)
 		}
 
 		if i != size-1 {
-			fmt.Println()
+			_, _ = fmt.Fprintln(headerDst)
 		}
 	}
 
 	if len(failedPods) > 0 {
-		return fmt.Errorf("%s failed on %d pod(s)", action, len(failedPods))
+		return fmt.Errorf("%s failed on %d of %d pods: %s", action, len(failedPods), size, strings.Join(failedPods, ", "))
 	}
 
 	return nil

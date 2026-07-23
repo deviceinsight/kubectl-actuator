@@ -1,9 +1,6 @@
 package actuator
 
-import (
-	"strconv"
-	"testing"
-)
+import "testing"
 
 func TestActuatorClientGetRaw(t *testing.T) {
 	tests := []struct {
@@ -11,7 +8,6 @@ func TestActuatorClientGetRaw(t *testing.T) {
 		endpoint     string
 		mockResponse string
 		mockStatus   int
-		mockErr      error
 		wantErr      bool
 		wantPath     string
 		wantBody     string
@@ -44,6 +40,15 @@ func TestActuatorClientGetRaw(t *testing.T) {
 			wantBody:     `{"status":"UP"}`,
 		},
 		{
+			name:         "nested endpoint path with leading slash",
+			endpoint:     "/health/liveness",
+			mockResponse: `{"status":"UP"}`,
+			mockStatus:   200,
+			wantErr:      false,
+			wantPath:     "/health/liveness",
+			wantBody:     `{"status":"UP"}`,
+		},
+		{
 			name:         "empty endpoint for root",
 			endpoint:     "",
 			mockResponse: `{"_links":{"self":{"href":"http://localhost:8080/actuator"}}}`,
@@ -58,6 +63,7 @@ func TestActuatorClientGetRaw(t *testing.T) {
 			mockResponse: ``,
 			mockStatus:   404,
 			wantErr:      true,
+			wantPath:     "/nonexistent",
 		},
 		{
 			name:         "500 internal server error",
@@ -65,6 +71,7 @@ func TestActuatorClientGetRaw(t *testing.T) {
 			mockResponse: ``,
 			mockStatus:   500,
 			wantErr:      true,
+			wantPath:     "/info",
 		},
 		{
 			name:         "non-JSON response",
@@ -87,18 +94,12 @@ func TestActuatorClientGetRaw(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			var capturedPath string
+			var requestedPaths []string
+			respond := respondWith(tt.mockStatus, tt.mockResponse)
 			mockClient := &MockHTTPClient{
 				GetFunc: func(path string) (*Response, error) {
-					capturedPath = path
-					if tt.mockErr != nil {
-						return nil, tt.mockErr
-					}
-					return &Response{
-						Body:       []byte(tt.mockResponse),
-						StatusCode: tt.mockStatus,
-						Status:     strconv.Itoa(tt.mockStatus),
-					}, nil
+					requestedPaths = append(requestedPaths, path)
+					return respond()
 				},
 			}
 
@@ -110,71 +111,16 @@ func TestActuatorClientGetRaw(t *testing.T) {
 				return
 			}
 
-			if tt.wantPath != "" && capturedPath != tt.wantPath {
-				t.Errorf("GET path = %v, want %v", capturedPath, tt.wantPath)
+			// The first request must hit the endpoint path itself; any later
+			// requests are the 404 diagnosis probing the actuator index.
+			if len(requestedPaths) == 0 || requestedPaths[0] != tt.wantPath {
+				t.Errorf("GET paths = %q, want %q first", requestedPaths, tt.wantPath)
 			}
 
 			if !tt.wantErr && tt.wantBody != "" {
 				if string(result) != tt.wantBody {
 					t.Errorf("body = %v, want %v", string(result), tt.wantBody)
 				}
-			}
-		})
-	}
-}
-
-func TestGetRawEndpointNormalization(t *testing.T) {
-	tests := []struct {
-		name         string
-		endpoint     string
-		expectedPath string
-	}{
-		{
-			name:         "no leading slash",
-			endpoint:     "info",
-			expectedPath: "/info",
-		},
-		{
-			name:         "with leading slash",
-			endpoint:     "/info",
-			expectedPath: "/info",
-		},
-		{
-			name:         "empty string",
-			endpoint:     "",
-			expectedPath: "",
-		},
-		{
-			name:         "nested path no leading slash",
-			endpoint:     "health/liveness",
-			expectedPath: "/health/liveness",
-		},
-		{
-			name:         "nested path with leading slash",
-			endpoint:     "/health/liveness",
-			expectedPath: "/health/liveness",
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			var capturedPath string
-			mockClient := &MockHTTPClient{
-				GetFunc: func(path string) (*Response, error) {
-					capturedPath = path
-					return &Response{
-						Body:       []byte(`{}`),
-						StatusCode: 200,
-						Status:     "200",
-					}, nil
-				},
-			}
-
-			client := &actuatorClient{httpClient: mockClient}
-			_, _ = client.GetRaw(tt.endpoint)
-
-			if capturedPath != tt.expectedPath {
-				t.Errorf("path = %v, want %v", capturedPath, tt.expectedPath)
 			}
 		})
 	}

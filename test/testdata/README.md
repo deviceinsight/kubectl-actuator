@@ -21,21 +21,30 @@ regex.*pattern
 ## Sections
 
 - **`-- test: <name> --`**: Starts a new test case
-- **`-- command --`**: Defines a command to execute (can have multiple)
-- **`-- expect --`**: Defines a substring that must appear in the last command's output
+- **`-- command --`**: Defines a command to execute (can have multiple). Arguments support shell-style quoting, so values may contain spaces: `--tag "id=G1 Old Gen"`
+- **`-- expect --`**: Defines a substring that must appear in the last command's combined output (stdout + stderr)
+- **`-- expect:stdout --`** / **`-- expect:stderr --`**: Substring that must appear on that specific stream
 - **`-- expect:regex --`**: Defines a regex pattern that must match the last command's output
 - **`-- expect:not --`**: Defines a substring that must NOT appear in the output (negated match)
+- **`-- expect:not:stdout --`** / **`-- expect:not:stderr --`**: Substring that must NOT appear on that specific stream
 - **`-- expect:error --`**: Marks the command as expected to fail (non-zero exit code) and validates error output
-- **`-- expect:jsonpath --`**: Validates JSON output using JSON path queries with comparisons
+- **`-- expect:jsonpath --`**: Validates JSON output (stdout) using JSON path queries with comparisons
+
+Unknown section names and empty sections are parse errors: a silently dropped
+expectation would make a test pass without asserting anything.
 
 ## Template Variables
 
-The following variables are automatically substituted:
+The following variables are automatically substituted, in commands and
+in expectation patterns:
 
 - `{{pod}}` or `{{pod[0]}}` - First pod name
 - `{{pod[1]}}` - Second pod name (for multi-pod tests)
 - `{{deployment}}` - Deployment name (test-actuator-app)
 - `{{namespace}}` - Test namespace (default)
+
+Anything that still looks like a `{{template}}` after substitution (a typo,
+or a pod index beyond the pod count) fails the test with a harness error.
 
 ## Expectations
 
@@ -74,7 +83,7 @@ kubectl-actuator --pod {{pod}} logger
 -- expect --
 ROOT
 -- command --
-kubectl-actuator --pod {{pod}} scheduled-tasks
+kubectl-actuator --pod {{pod}} scheduledtasks
 -- expect --
 cron
 ```
@@ -82,7 +91,7 @@ cron
 In the interleaved example:
 - First command checks info endpoint, expects to find "test-actuator-app"
 - Second command checks logger endpoint, expects to find "ROOT"
-- Third command checks scheduled-tasks endpoint, expects to find "cron"
+- Third command checks scheduledtasks endpoint, expects to find "cron"
 
 ## Testing Error Scenarios
 
@@ -99,9 +108,10 @@ context "invalid-context" does not exist
 ```
 
 When using `expect:error`:
-- The command **must** return a non-zero exit code, otherwise the test fails
+- The command must return a non-zero exit code, otherwise the test fails
 - Expectations validate the error output (stdout + stderr combined)
 - You can have multiple `expect:error` assertions to validate different parts of the error message
+- `expect:error` checks combined output; pair it with `expect:stderr` when the stream matters
 
 ## JSON Path Validation
 
@@ -128,6 +138,8 @@ kubectl-actuator --pod {{pod}} health
 -- expect:jsonpath --
 status == UP
 ```
+
+The `==` needs a space on each side; a bare `status==UP` is rejected.
 
 ### Nested Fields
 Access fields at any depth:
@@ -174,16 +186,16 @@ enabled == true
 - **`expect:jsonpath`** - Validate JSON fields exist or have specific values
 - **`expect`** - Simple substring checks, works on any output
 - **`expect:regex`** - Pattern matching for flexible validation
-- **`expect:json`** - Check JSON validity (legacy, use jsonpath instead)
 
 ## File Organization
 
-Tests are organized by logical grouping:
-- `logger-tests.txt` - Logger-related functionality
-- `actuator-endpoints.txt` - Spring Actuator endpoints (info, scheduled-tasks, etc.)
-- `multi-pod-tests.txt` - Tests involving multiple pods
+Tests are grouped by topic, one file per area (for example `logger-tests.txt`
+or `multi-pod-tests.txt`); the runner discovers every `.txt` file in this
+directory automatically.
 
 ## Running Tests
+
+The integration tests require Docker: they start a k3s cluster via testcontainers and build the Spring Boot test app image locally.
 
 ```bash
 cd test

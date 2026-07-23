@@ -1,0 +1,37 @@
+-- test: endpoints lists availability and the serving command --
+-- command --
+kubectl-actuator --pod {{pod}} endpoints
+-- expect:regex --
+ENDPOINT\s+AVAILABLE\s+KUBECTL ACTUATOR SUPPORT
+-- expect:regex --
+health\s+true\s+health
+-- expect:regex --
+loggers\s+true\s+logger
+-- expect:regex --
+scheduledtasks\s+true\s+scheduledtasks
+-- expect:regex --
+configprops\s+true\s+-
+-- expect:not --
+mappings
+-- expect:not --
+self
+
+
+-- test: endpoints name output is plain --
+-- command --
+kubectl-actuator --pod {{pod}} endpoints -o name
+-- expect:stdout --
+health
+-- expect:stdout --
+loggers
+-- expect:not:stdout --
+COMMAND
+
+
+-- test: endpoints structured output passes the index through --
+-- command --
+kubectl-actuator --pod {{pod}} endpoints -o json
+-- expect:jsonpath --
+pods.0.data._links.health
+-- expect:jsonpath --
+pods.0.data._links.self

@@ -1,9 +1,7 @@
 package cmd
 
 import (
-	"bytes"
-	"io"
-	"os"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -11,24 +9,24 @@ import (
 func TestFormatInfo(t *testing.T) {
 	tests := []struct {
 		name     string
-		info     map[string]interface{}
+		info     map[string]any
 		expected []string // lines that should be present
 	}{
 		{
 			name: "all sections present",
-			info: map[string]interface{}{
-				"app": map[string]interface{}{
+			info: map[string]any{
+				"app": map[string]any{
 					"name":        "test-app",
 					"description": "Test Application",
 				},
-				"build": map[string]interface{}{
+				"build": map[string]any{
 					"group":    "com.example",
 					"artifact": "test-app",
 					"version":  "1.0.0",
 				},
-				"git": map[string]interface{}{
+				"git": map[string]any{
 					"branch": "main",
-					"commit": map[string]interface{}{
+					"commit": map[string]any{
 						"id":   "abc123",
 						"time": "2024-11-30T10:00:00Z",
 					},
@@ -49,8 +47,8 @@ func TestFormatInfo(t *testing.T) {
 		},
 		{
 			name: "only app section",
-			info: map[string]interface{}{
-				"app": map[string]interface{}{
+			info: map[string]any{
+				"app": map[string]any{
 					"name": "test-app",
 				},
 			},
@@ -61,8 +59,8 @@ func TestFormatInfo(t *testing.T) {
 		},
 		{
 			name: "only build section",
-			info: map[string]interface{}{
-				"build": map[string]interface{}{
+			info: map[string]any{
+				"build": map[string]any{
 					"version": "2.0.0",
 				},
 			},
@@ -73,7 +71,7 @@ func TestFormatInfo(t *testing.T) {
 		},
 		{
 			name:     "empty info",
-			info:     map[string]interface{}{},
+			info:     map[string]any{},
 			expected: []string{},
 		},
 	}
@@ -84,6 +82,9 @@ func TestFormatInfo(t *testing.T) {
 				formatInfo(tt.info)
 			})
 
+			if len(tt.expected) == 0 && output != "" {
+				t.Errorf("formatInfo() expected no output, got:\n%s", output)
+			}
 			for _, expected := range tt.expected {
 				if !strings.Contains(output, expected) {
 					t.Errorf("formatInfo() output missing expected line:\n  want: %s\n  got:\n%s", expected, output)
@@ -96,12 +97,12 @@ func TestFormatInfo(t *testing.T) {
 func TestFormatAppSection(t *testing.T) {
 	tests := []struct {
 		name     string
-		data     interface{}
+		data     any
 		expected []string
 	}{
 		{
 			name: "complete app info",
-			data: map[string]interface{}{
+			data: map[string]any{
 				"name":        "my-app",
 				"description": "My Application",
 			},
@@ -113,7 +114,7 @@ func TestFormatAppSection(t *testing.T) {
 		},
 		{
 			name: "app with custom fields",
-			data: map[string]interface{}{
+			data: map[string]any{
 				"name":    "my-app",
 				"version": "1.0",
 				"author":  "John Doe",
@@ -121,13 +122,13 @@ func TestFormatAppSection(t *testing.T) {
 			expected: []string{
 				"Application:",
 				"  Name:         my-app",
-				"  Version:  1.0",
-				"  Author:  John Doe",
+				"  Author:       John Doe",
+				"  Version:      1.0",
 			},
 		},
 		{
 			name: "only name",
-			data: map[string]interface{}{
+			data: map[string]any{
 				"name": "simple-app",
 			},
 			expected: []string{
@@ -148,6 +149,9 @@ func TestFormatAppSection(t *testing.T) {
 				formatAppSection(tt.data)
 			})
 
+			if len(tt.expected) == 0 && output != "" {
+				t.Errorf("formatAppSection() expected no output, got:\n%s", output)
+			}
 			for _, expected := range tt.expected {
 				if !strings.Contains(output, expected) {
 					t.Errorf("formatAppSection() output missing expected line:\n  want: %s\n  got:\n%s", expected, output)
@@ -160,13 +164,13 @@ func TestFormatAppSection(t *testing.T) {
 func TestFormatBuildSection(t *testing.T) {
 	tests := []struct {
 		name        string
-		data        interface{}
+		data        any
 		expected    []string
 		notExpected []string
 	}{
 		{
 			name: "complete build info",
-			data: map[string]interface{}{
+			data: map[string]any{
 				"group":    "com.example",
 				"artifact": "my-artifact",
 				"name":     "my-artifact",
@@ -187,7 +191,7 @@ func TestFormatBuildSection(t *testing.T) {
 		},
 		{
 			name: "build with different name",
-			data: map[string]interface{}{
+			data: map[string]any{
 				"artifact": "my-artifact",
 				"name":     "different-name",
 			},
@@ -199,7 +203,7 @@ func TestFormatBuildSection(t *testing.T) {
 		},
 		{
 			name: "minimal build info",
-			data: map[string]interface{}{
+			data: map[string]any{
 				"version": "1.0.0",
 			},
 			expected: []string{
@@ -220,6 +224,9 @@ func TestFormatBuildSection(t *testing.T) {
 				formatBuildSection(tt.data)
 			})
 
+			if len(tt.expected) == 0 && output != "" {
+				t.Errorf("formatBuildSection() expected no output, got:\n%s", output)
+			}
 			for _, expected := range tt.expected {
 				if !strings.Contains(output, expected) {
 					t.Errorf("formatBuildSection() output missing expected line:\n  want: %s\n  got:\n%s", expected, output)
@@ -238,14 +245,14 @@ func TestFormatBuildSection(t *testing.T) {
 func TestFormatGitSection(t *testing.T) {
 	tests := []struct {
 		name     string
-		data     interface{}
+		data     any
 		expected []string
 	}{
 		{
 			name: "complete git info with commit time",
-			data: map[string]interface{}{
+			data: map[string]any{
 				"branch": "main",
-				"commit": map[string]interface{}{
+				"commit": map[string]any{
 					"id":   "abc123def456",
 					"time": "2024-11-30T10:00:00Z",
 				},
@@ -258,9 +265,9 @@ func TestFormatGitSection(t *testing.T) {
 		},
 		{
 			name: "git info without commit time",
-			data: map[string]interface{}{
+			data: map[string]any{
 				"branch": "develop",
-				"commit": map[string]interface{}{
+				"commit": map[string]any{
 					"id": "xyz789",
 				},
 			},
@@ -272,7 +279,7 @@ func TestFormatGitSection(t *testing.T) {
 		},
 		{
 			name: "only branch",
-			data: map[string]interface{}{
+			data: map[string]any{
 				"branch": "feature/new-feature",
 			},
 			expected: []string{
@@ -282,9 +289,9 @@ func TestFormatGitSection(t *testing.T) {
 		},
 		{
 			name: "commit without id",
-			data: map[string]interface{}{
+			data: map[string]any{
 				"branch": "main",
-				"commit": map[string]interface{}{
+				"commit": map[string]any{
 					"time": "2024-11-30T10:00:00Z",
 				},
 			},
@@ -306,10 +313,93 @@ func TestFormatGitSection(t *testing.T) {
 				formatGitSection(tt.data)
 			})
 
+			if len(tt.expected) == 0 && output != "" {
+				t.Errorf("formatGitSection() expected no output, got:\n%s", output)
+			}
 			for _, expected := range tt.expected {
 				if !strings.Contains(output, expected) {
 					t.Errorf("formatGitSection() output missing expected line:\n  want: %s\n  got:\n%s", expected, output)
 				}
+			}
+		})
+	}
+}
+
+func TestFormatInfoGenericSections(t *testing.T) {
+	info := map[string]any{
+		"build": map[string]any{
+			"version": "1.0.0",
+		},
+		"java": map[string]any{
+			"version": "21.0.1",
+			"vendor": map[string]any{
+				"name": "Eclipse Adoptium",
+			},
+		},
+		"os": map[string]any{
+			"name": "Linux",
+			"arch": "amd64",
+		},
+		"kubernetes": map[string]any{
+			"namespace":      "default",
+			"podName":        "my-app-xk7pq",
+			"podIP":          "10.0.0.23",
+			"serviceAccount": "my-app",
+		},
+		"custom-scalar": "just a value",
+		"tags":          []any{"a", "b"},
+	}
+
+	output := captureOutput(func() {
+		formatInfo(info)
+	})
+
+	for _, expected := range []string{
+		"Build:",
+		"Java:",
+		"  Version:  21.0.1",
+		"  Vendor:",
+		"    Name:  Eclipse Adoptium",
+		"OS:",
+		"  Arch:  amd64",
+		"Kubernetes:",
+		"  Namespace:        default",
+		"  Pod Name:         my-app-xk7pq",
+		"  Pod IP:           10.0.0.23",
+		"  Service Account:  my-app",
+		"Custom-scalar:",
+		"  just a value",
+		"Tags:",
+		"  a, b",
+	} {
+		if !strings.Contains(output, expected) {
+			t.Errorf("formatInfo() output missing expected line:\n  want: %q\n  got:\n%s", expected, output)
+		}
+	}
+
+	// Curated sections come before generic ones
+	if strings.Index(output, "Build:") > strings.Index(output, "Java:") {
+		t.Errorf("curated Build section should precede generic sections:\n%s", output)
+	}
+}
+
+func TestTitleCaseKey(t *testing.T) {
+	tests := []struct {
+		input string
+		want  string
+	}{
+		{"podName", "Pod Name"},
+		{"hostIP", "Host IP"},
+		{"serviceAccount", "Service Account"},
+		{"version", "Version"},
+		{"nodeName", "Node Name"},
+		{"IP", "IP"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.input, func(t *testing.T) {
+			if got := titleCaseKey(tt.input); got != tt.want {
+				t.Errorf("titleCaseKey(%q) = %q, want %q", tt.input, got, tt.want)
 			}
 		})
 	}
@@ -340,11 +430,11 @@ func TestCapitalizeFirst(t *testing.T) {
 }
 
 func TestFormatInfoSectionSeparation(t *testing.T) {
-	info := map[string]interface{}{
-		"app": map[string]interface{}{
+	info := map[string]any{
+		"app": map[string]any{
 			"name": "test-app",
 		},
-		"build": map[string]interface{}{
+		"build": map[string]any{
 			"version": "1.0.0",
 		},
 	}
@@ -355,37 +445,22 @@ func TestFormatInfoSectionSeparation(t *testing.T) {
 
 	lines := strings.Split(strings.TrimSpace(output), "\n")
 
-	// Check that sections are separated by blank lines
-	appIndex := -1
-	buildIndex := -1
-
-	for i, line := range lines {
-		if strings.Contains(line, "Application:") {
-			appIndex = i
-		}
-		if strings.Contains(line, "Build:") {
-			buildIndex = i
-		}
+	if !slices.Contains(lines, "Application:") {
+		t.Fatalf("Application: section missing from output:\n%s", output)
 	}
-
-	if appIndex == -1 || buildIndex == -1 {
-		t.Fatal("Missing expected sections in output")
+	buildIndex := slices.Index(lines, "Build:")
+	if buildIndex == -1 {
+		t.Fatalf("Build: section missing from output:\n%s", output)
 	}
-
-	// There should be a blank line between sections
-	if buildIndex <= appIndex+2 {
-		t.Errorf("Expected blank line between sections, got:\n%s", output)
-	}
-
-	// Output should not end with blank line
-	if lines[len(lines)-1] == "" {
-		t.Error("Output should not end with a blank line")
+	// Sections are separated by a blank line.
+	if buildIndex == 0 || lines[buildIndex-1] != "" {
+		t.Errorf("expected a blank line before the Build: section, got:\n%s", output)
 	}
 }
 
 func TestFormatInfoNoTrailingNewline(t *testing.T) {
-	info := map[string]interface{}{
-		"build": map[string]interface{}{
+	info := map[string]any{
+		"build": map[string]any{
 			"version": "1.0.0",
 		},
 	}
@@ -398,20 +473,4 @@ func TestFormatInfoNoTrailingNewline(t *testing.T) {
 	if strings.HasSuffix(output, "\n\n") {
 		t.Error("Output should not have trailing blank line")
 	}
-}
-
-// captureOutput captures stdout during the execution of a function
-func captureOutput(f func()) string {
-	old := os.Stdout
-	r, w, _ := os.Pipe()
-	os.Stdout = w
-
-	f()
-
-	_ = w.Close()
-	os.Stdout = old
-
-	var buf bytes.Buffer
-	_, _ = io.Copy(&buf, r)
-	return buf.String()
 }

@@ -1,7 +1,7 @@
 package actuator
 
 import (
-	"strconv"
+	"strings"
 	"testing"
 )
 
@@ -10,7 +10,6 @@ func TestActuatorClientGetMetrics(t *testing.T) {
 		name         string
 		mockResponse string
 		mockStatus   int
-		mockErr      error
 		wantErr      bool
 		wantNames    []string
 	}{
@@ -57,21 +56,7 @@ func TestActuatorClientGetMetrics(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			mockClient := &MockHTTPClient{
-				GetFunc: func(path string) (*Response, error) {
-					if path != "/metrics" {
-						t.Errorf("unexpected path: %s", path)
-					}
-					if tt.mockErr != nil {
-						return nil, tt.mockErr
-					}
-					return &Response{
-						Body:       []byte(tt.mockResponse),
-						StatusCode: tt.mockStatus,
-						Status:     strconv.Itoa(tt.mockStatus),
-					}, nil
-				},
-			}
+			mockClient := newEndpointMock(t, "/metrics", respondWith(tt.mockStatus, tt.mockResponse))
 
 			client := &actuatorClient{httpClient: mockClient}
 			result, err := client.GetMetrics()
@@ -97,15 +82,16 @@ func TestActuatorClientGetMetrics(t *testing.T) {
 
 func TestActuatorClientGetMetric(t *testing.T) {
 	tests := []struct {
-		name            string
-		metricName      string
-		mockResponse    string
-		mockStatus      int
-		mockErr         error
-		wantErr         bool
-		wantPath        string
-		wantDescription string
-		wantBaseUnit    string
+		name             string
+		metricName       string
+		mockResponse     string
+		mockStatus       int
+		wantErr          bool
+		wantPath         string
+		wantDescription  string
+		wantBaseUnit     string
+		wantMeasurements int
+		wantTags         int
 	}{
 		{
 			name:       "successful metric detail response",
@@ -122,11 +108,13 @@ func TestActuatorClientGetMetric(t *testing.T) {
 					{"tag": "id", "values": ["G1 Eden Space", "G1 Old Gen"]}
 				]
 			}`,
-			mockStatus:      200,
-			wantErr:         false,
-			wantPath:        "/metrics/jvm.memory.used",
-			wantDescription: "The amount of used memory",
-			wantBaseUnit:    "bytes",
+			mockStatus:       200,
+			wantErr:          false,
+			wantPath:         "/metrics/jvm.memory.used",
+			wantDescription:  "The amount of used memory",
+			wantBaseUnit:     "bytes",
+			wantMeasurements: 1,
+			wantTags:         2,
 		},
 		{
 			name:       "metric with multiple measurements",
@@ -142,11 +130,12 @@ func TestActuatorClientGetMetric(t *testing.T) {
 				],
 				"availableTags": []
 			}`,
-			mockStatus:      200,
-			wantErr:         false,
-			wantPath:        "/metrics/http.server.requests",
-			wantDescription: "HTTP server request statistics",
-			wantBaseUnit:    "seconds",
+			mockStatus:       200,
+			wantErr:          false,
+			wantPath:         "/metrics/http.server.requests",
+			wantDescription:  "HTTP server request statistics",
+			wantBaseUnit:     "seconds",
+			wantMeasurements: 3,
 		},
 		{
 			name:       "metric with special characters in name",
@@ -158,9 +147,22 @@ func TestActuatorClientGetMetric(t *testing.T) {
 				"measurements": [{"statistic": "COUNT", "value": 50}],
 				"availableTags": []
 			}`,
+			mockStatus:       200,
+			wantErr:          false,
+			wantPath:         "/metrics/cache.gets%7Bcache=myCache%7D",
+			wantMeasurements: 1,
+		},
+		{
+			name:       "empty measurements and tags",
+			metricName: "test.metric",
+			mockResponse: `{
+				"name": "test.metric",
+				"measurements": [],
+				"availableTags": []
+			}`,
 			mockStatus: 200,
 			wantErr:    false,
-			wantPath:   "/metrics/cache.gets%7Bcache=myCache%7D",
+			wantPath:   "/metrics/test.metric",
 		},
 		{
 			name:         "metric not found",
@@ -187,31 +189,25 @@ func TestActuatorClientGetMetric(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			var capturedPath string
+			var requestedPath string
+			respond := respondWith(tt.mockStatus, tt.mockResponse)
 			mockClient := &MockHTTPClient{
 				GetFunc: func(path string) (*Response, error) {
-					capturedPath = path
-					if tt.mockErr != nil {
-						return nil, tt.mockErr
-					}
-					return &Response{
-						Body:       []byte(tt.mockResponse),
-						StatusCode: tt.mockStatus,
-						Status:     strconv.Itoa(tt.mockStatus),
-					}, nil
+					requestedPath = path
+					return respond()
 				},
 			}
 
 			client := &actuatorClient{httpClient: mockClient}
-			result, err := client.GetMetric(tt.metricName)
+			result, err := client.GetMetric(tt.metricName, nil)
 
 			if (err != nil) != tt.wantErr {
 				t.Errorf("GetMetric() error = %v, wantErr %v", err, tt.wantErr)
 				return
 			}
 
-			if tt.wantPath != "" && capturedPath != tt.wantPath {
-				t.Errorf("GET path = %v, want %v", capturedPath, tt.wantPath)
+			if tt.wantPath != "" && requestedPath != tt.wantPath {
+				t.Errorf("GET path = %v, want %v", requestedPath, tt.wantPath)
 			}
 
 			if !tt.wantErr && result != nil {
@@ -221,83 +217,52 @@ func TestActuatorClientGetMetric(t *testing.T) {
 				if tt.wantBaseUnit != "" && result.BaseUnit != tt.wantBaseUnit {
 					t.Errorf("baseUnit = %v, want %v", result.BaseUnit, tt.wantBaseUnit)
 				}
+				if len(result.Measurements) != tt.wantMeasurements {
+					t.Errorf("got %d measurements, want %d", len(result.Measurements), tt.wantMeasurements)
+				}
+				if len(result.AvailableTags) != tt.wantTags {
+					t.Errorf("got %d tags, want %d", len(result.AvailableTags), tt.wantTags)
+				}
 			}
 		})
 	}
 }
 
-func TestMetricResponseMeasurements(t *testing.T) {
-	tests := []struct {
-		name             string
-		mockResponse     string
-		wantMeasurements int
-		wantTags         int
-	}{
-		{
-			name: "single measurement",
-			mockResponse: `{
-				"name": "test.metric",
-				"measurements": [{"statistic": "VALUE", "value": 42.5}],
-				"availableTags": []
-			}`,
-			wantMeasurements: 1,
-			wantTags:         0,
-		},
-		{
-			name: "multiple measurements and tags",
-			mockResponse: `{
-				"name": "test.metric",
-				"measurements": [
-					{"statistic": "COUNT", "value": 100},
-					{"statistic": "TOTAL_TIME", "value": 10.5},
-					{"statistic": "MAX", "value": 0.5}
-				],
-				"availableTags": [
-					{"tag": "method", "values": ["GET", "POST"]},
-					{"tag": "status", "values": ["200", "404", "500"]}
-				]
-			}`,
-			wantMeasurements: 3,
-			wantTags:         2,
-		},
-		{
-			name: "empty measurements and tags",
-			mockResponse: `{
-				"name": "test.metric",
-				"measurements": [],
-				"availableTags": []
-			}`,
-			wantMeasurements: 0,
-			wantTags:         0,
+func TestActuatorClientGetMetricWithTags(t *testing.T) {
+	var requestedPath string
+	respond := respondWith(200, `{"name": "jvm.memory.used", "measurements": [], "availableTags": []}`)
+	mockClient := &MockHTTPClient{
+		GetFunc: func(path string) (*Response, error) {
+			requestedPath = path
+			return respond()
 		},
 	}
 
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			mockClient := &MockHTTPClient{
-				GetFunc: func(path string) (*Response, error) {
-					return &Response{
-						Body:       []byte(tt.mockResponse),
-						StatusCode: 200,
-						Status:     "200",
-					}, nil
-				},
-			}
+	client := &actuatorClient{httpClient: mockClient}
+	_, err := client.GetMetric("jvm.memory.used", []string{"area:heap", "id:G1 Old Gen"})
+	if err != nil {
+		t.Fatalf("GetMetric() error = %v", err)
+	}
 
-			client := &actuatorClient{httpClient: mockClient}
-			result, err := client.GetMetric("test.metric")
+	want := "/metrics/jvm.memory.used?tag=area%3Aheap&tag=id%3AG1+Old+Gen"
+	if requestedPath != want {
+		t.Errorf("requested path = %q, want %q", requestedPath, want)
+	}
+}
 
-			if err != nil {
-				t.Fatalf("unexpected error: %v", err)
-			}
+func TestActuatorClientGetMetricWithTagsBadRequest(t *testing.T) {
+	mockClient := &MockHTTPClient{
+		GetFunc: func(path string) (*Response, error) {
+			return &Response{StatusCode: 400, Status: "400 Bad Request"}, nil
+		},
+	}
 
-			if len(result.Measurements) != tt.wantMeasurements {
-				t.Errorf("got %d measurements, want %d", len(result.Measurements), tt.wantMeasurements)
-			}
-
-			if len(result.AvailableTags) != tt.wantTags {
-				t.Errorf("got %d tags, want %d", len(result.AvailableTags), tt.wantTags)
-			}
-		})
+	client := &actuatorClient{httpClient: mockClient}
+	_, err := client.GetMetric("jvm.memory.used", []string{"bogus:tag"})
+	if err == nil {
+		t.Fatal("expected error for 400 response")
+	}
+	if !strings.Contains(err.Error(), "bogus:tag") {
+		t.Errorf("error should mention the tags, got: %v", err)
 	}
 }

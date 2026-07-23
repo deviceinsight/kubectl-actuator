@@ -7,6 +7,20 @@ on:
     branches: [main]
 
 jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Run vet and gofmt checks
+        run: make lint
+
   test:
     runs-on: ubuntu-latest
     steps:

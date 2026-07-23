@@ -1,28 +1,46 @@
 package actuator
 
 import (
+	"fmt"
 	"strings"
 )
 
-type ActuatorIndex struct {
-	Links map[string]Link `json:"_links"`
+// actuatorIndex is the discovery document served at the actuator base path.
+type actuatorIndex struct {
+	Links map[string]indexLink `json:"_links"`
 }
 
-type Link struct {
+type indexLink struct {
 	Href      string `json:"href"`
 	Templated bool   `json:"templated"`
 }
 
-func (c *actuatorClient) GetActuatorIndex() (*ActuatorIndex, error) {
-	var index ActuatorIndex
-	if err := c.getAndParse("", "", "failed to get actuator index", &index); err != nil {
-		return nil, err
+// templatedLinkSuffixes are the template-variable names Spring appends to a
+// templated link's id: "health-path" -> "health", "loggers-name" -> "loggers".
+var templatedLinkSuffixes = []string{
+	"-path", "-name", "-cache", "-prefix", "-toMatch", "-requiredMetricName",
+}
+
+// getActuatorIndex fetches the discovery document. Index failures are
+// reported plainly: the index is itself the probe the 404 diagnosis relies
+// on, so it must not recurse into diagnosis.
+func (c *actuatorClient) getActuatorIndex() (*actuatorIndex, error) {
+	resp, err := c.httpClient.Get("")
+	if err != nil {
+		return nil, c.connectionError(err)
+	}
+	if resp.IsErrorStatus() {
+		return nil, fmt.Errorf("failed to get actuator index: %s", resp.Status)
+	}
+	var index actuatorIndex
+	if err := parseJSON(resp.Body, &index); err != nil {
+		return nil, c.notJSONError(err, "failed to get actuator index")
 	}
 	return &index, nil
 }
 
 func (c *actuatorClient) GetAvailableEndpoints() ([]string, error) {
-	index, err := c.GetActuatorIndex()
+	index, err := c.getActuatorIndex()
 	if err != nil {
 		return nil, err
 	}
@@ -35,17 +53,11 @@ func (c *actuatorClient) GetAvailableEndpoints() ([]string, error) {
 			continue
 		}
 
-		// For templated endpoints, extract the base name
-		// e.g., "health-path" -> "health", "loggers-name" -> "loggers"
 		baseName := name
 		if link.Templated {
-			// Remove common suffixes from templated endpoints
-			baseName = strings.TrimSuffix(name, "-path")
-			baseName = strings.TrimSuffix(baseName, "-name")
-			baseName = strings.TrimSuffix(baseName, "-cache")
-			baseName = strings.TrimSuffix(baseName, "-prefix")
-			baseName = strings.TrimSuffix(baseName, "-toMatch")
-			baseName = strings.TrimSuffix(baseName, "-requiredMetricName")
+			for _, suffix := range templatedLinkSuffixes {
+				baseName = strings.TrimSuffix(baseName, suffix)
+			}
 		}
 
 		if !seen[baseName] {

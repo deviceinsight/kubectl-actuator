@@ -1,4 +1,4 @@
-.PHONY: build test test-integration start-testenvironment clean help
+.PHONY: build lint test test-integration start-testenvironment clean help
 
 # Version information
 VERSION ?= dev
@@ -12,12 +12,22 @@ LDFLAGS := -X github.com/deviceinsight/kubectl-actuator/internal/cmd.Version=$(V
 build:
 	go build -ldflags "$(LDFLAGS)" -o kubectl-actuator .
 
+# Run static analysis (vet + gofmt) on both modules
+lint:
+	go vet ./...
+	cd test && go vet ./...
+	@unformatted=$$(gofmt -l .); \
+	if [ -n "$$unformatted" ]; then \
+		echo "gofmt needed on:"; echo "$$unformatted"; exit 1; \
+	fi
+
 # Run unit tests
 test:
 	go test -v ./...
 
-# Build Spring Boot test app and run integration tests
-test-integration: build
+# Run integration tests (requires Docker). The harness builds its own binary
+# (test/kubectl-actuator), so this deliberately does not depend on build.
+test-integration:
 	cd test && go test -v -timeout 15m
 
 # Start a manual test environment (blocks until Ctrl+C)
@@ -34,8 +44,9 @@ clean:
 help:
 	@echo "Available targets:"
 	@echo "  build                  - Build kubectl-actuator binary"
+	@echo "  lint                   - Run go vet and gofmt checks"
 	@echo "  test                   - Run unit tests"
-	@echo "  test-integration       - Build test app and run integration tests"
+	@echo "  test-integration       - Run integration tests (requires Docker)"
 	@echo "  start-testenvironment  - Start manual test environment (Ctrl+C to stop)"
 	@echo "  clean                  - Clean build artifacts"
 	@echo "  help                   - Show this help message"

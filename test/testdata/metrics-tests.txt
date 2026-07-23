@@ -39,3 +39,32 @@ jvm.memory.used
 jvm.threads.live
 -- expect:not --
 system.cpu.count
+
+
+-- test: metrics tag drill-down --
+-- command --
+kubectl-actuator --pod {{pod}} metrics jvm.memory.used --tag area=heap
+-- expect --
+NAME         jvm.memory.used
+-- expect --
+TAGS         area:heap
+-- expect --
+MEASUREMENTS
+-- expect:not --
+area  heap, nonheap
+
+
+-- test: metrics nonexistent metric --
+-- command --
+kubectl-actuator --pod {{pod}} metrics nonexistent.metric.xyz
+-- expect:error --
+metric "nonexistent.metric.xyz" not found
+
+
+-- test: metrics tag without metric name --
+-- command --
+kubectl-actuator --pod {{pod}} metrics --tag area=heap
+-- expect:error --
+--tag requires a metric name
+-- expect:stderr --
+--tag requires a metric name

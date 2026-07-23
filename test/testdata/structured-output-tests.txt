@@ -1,0 +1,96 @@
+-- test: health json single pod --
+-- command --
+kubectl-actuator --pod {{pod}} health -o json
+-- expect:jsonpath --
+pods.0.name == {{pod}}
+-- expect:jsonpath --
+pods.0.data.status == UP
+-- expect:jsonpath --
+pods.0.data.components
+
+
+-- test: health yaml single pod --
+-- command --
+kubectl-actuator --pod {{pod}} health -o yaml
+-- expect:stdout --
+pods:
+-- expect:stdout --
+status: UP
+-- expect:stdout --
+name: {{pod}}
+
+
+-- test: health json multi-pod is one document --
+-- command --
+kubectl-actuator --deployment {{deployment}} health -o json
+-- expect:jsonpath --
+pods.0.data.status == UP
+-- expect:jsonpath --
+pods.1.data.status == UP
+
+
+-- test: env json applies filter --
+-- command --
+kubectl-actuator --pod {{pod}} env --filter spring.application -o json
+-- expect:jsonpath --
+pods.0.data.propertySources
+-- expect:stdout --
+spring.application.name
+-- expect:not:stdout --
+java.version
+
+
+-- test: logger json shows configured levels --
+-- command --
+kubectl-actuator --pod {{pod}} logger -o json
+-- expect:jsonpath --
+pods.0.data.loggers.ROOT.configuredLevel == INFO
+
+
+-- test: metrics json detail with tag --
+-- command --
+kubectl-actuator --pod {{pod}} metrics jvm.memory.used --tag area=heap -o json
+-- expect:jsonpath --
+pods.0.data.name == jvm.memory.used
+-- expect:jsonpath --
+pods.0.data.baseUnit == bytes
+
+
+-- test: beans json applies filter --
+-- command --
+kubectl-actuator --pod {{pod}} beans --filter testScheduled -o json
+-- expect:jsonpath --
+pods.0.data.contexts.test-actuator-app.beans.testScheduledTasks
+-- expect:not:stdout --
+testActuatorApplication
+
+
+-- test: threaddump json applies state filter --
+-- command --
+kubectl-actuator --pod {{pod}} threaddump --state TIMED_WAITING -o json
+-- expect:jsonpath --
+pods.0.data.threads.0.threadState == TIMED_WAITING
+-- expect:not:stdout --
+RUNNABLE
+
+
+-- test: metrics list json applies filter --
+-- command --
+kubectl-actuator --pod {{pod}} metrics --filter jvm.memory -o json
+-- expect:stdout --
+jvm.memory.used
+-- expect:not:stdout --
+jvm.threads.live
+
+
+-- test: structured output reports pod errors in envelope --
+-- command --
+kubectl-actuator --pod nonexistent-pod-12345 health -o json
+-- expect:error --
+not found in namespace
+-- expect:jsonpath --
+pods.0.error
+-- expect:stdout --
+"data": null
+-- expect:stderr --
+not found in namespace

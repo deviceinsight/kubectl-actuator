@@ -1,0 +1,31 @@
+-- test: scheduled tasks --
+-- command --
+kubectl-actuator --pod {{pod}} scheduledtasks
+-- expect:regex --
+TYPE\s+TARGET\s+SCHEDULE\s+NEXT\s+LAST\s+STATUS
+-- expect:regex --
+cron\s+TestScheduledTasks\.cronTask\s+cron\(0 \* \* \* \* \*\)
+-- expect:regex --
+fixedDelay\s+TestScheduledTasks\.fixedDelayTask\s+fixedDelay=5m
+-- expect:regex --
+fixedRate\s+TestScheduledTasks\.fixedRateTask\s+fixedRate=30m
+-- expect --
+SUCCESS
+-- expect:regex --
+in \d+
+-- expect:regex --
+\d+m?s ago
+
+
+-- test: scheduled tasks wide shows full targets --
+-- command --
+kubectl-actuator --pod {{pod}} scheduledtasks -o wide
+-- expect:regex --
+fixedDelay\s+com\.example\.testapp\.TestScheduledTasks\.fixedDelayTask
+
+
+-- test: scheduled-tasks alias --
+-- command --
+kubectl-actuator --pod {{pod}} scheduled-tasks
+-- expect:regex --
+TYPE\s+TARGET

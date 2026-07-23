@@ -1,11 +1,11 @@
 package actuator
 
 func (c *actuatorClient) GetScheduledTasks() (*ScheduledTasksResponse, error) {
-	var response ScheduledTasksResponse
-	if err := c.getAndParse("/scheduledtasks", "scheduledtasks", "failed to get scheduled tasks", &response); err != nil {
+	var tasksResponse ScheduledTasksResponse
+	if err := c.getAndParse("/scheduledtasks", "scheduledtasks", "failed to get scheduled tasks", &tasksResponse); err != nil {
 		return nil, err
 	}
-	return &response, nil
+	return &tasksResponse, nil
 }
 
 type ScheduledTasksResponse struct {
@@ -19,6 +19,8 @@ type Runnable struct {
 	Target string `json:"target"`
 }
 
+// TimeOnly is an execution that has not happened yet: Spring reports only its
+// scheduled time.
 type TimeOnly struct {
 	Time string `json:"time"`
 }

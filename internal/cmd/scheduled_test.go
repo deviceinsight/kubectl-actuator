@@ -7,7 +7,7 @@ import (
 	"github.com/deviceinsight/kubectl-actuator/internal/actuator"
 )
 
-func TestFormatMs(t *testing.T) {
+func TestFormatTaskInterval(t *testing.T) {
 	tests := []struct {
 		name string
 		ms   int64
@@ -27,9 +27,9 @@ func TestFormatMs(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := formatMs(tt.ms)
+			got := formatTaskInterval(tt.ms)
 			if got != tt.want {
-				t.Errorf("formatMs(%d) = %v, want %v", tt.ms, got, tt.want)
+				t.Errorf("formatTaskInterval(%d) = %v, want %v", tt.ms, got, tt.want)
 			}
 		})
 	}
@@ -49,7 +49,7 @@ func TestFormatDurationCompact(t *testing.T) {
 		{"1 hour", 1 * time.Hour, "1h"},
 		{"1 hour 5 minutes", 1*time.Hour + 5*time.Minute, "1h5m"},
 		{"negative duration", -5 * time.Minute, "5m"},
-		{"subsecond rounds down", 500 * time.Millisecond, "1s"}, // rounds to nearest second
+		{"500ms rounds up to nearest second", 500 * time.Millisecond, "1s"},
 	}
 
 	for _, tt := range tests {
@@ -62,7 +62,7 @@ func TestFormatDurationCompact(t *testing.T) {
 	}
 }
 
-func TestFormatTarget(t *testing.T) {
+func TestFormatTaskTarget(t *testing.T) {
 	tests := []struct {
 		name     string
 		target   string
@@ -97,15 +97,15 @@ func TestFormatTarget(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := formatTarget(tt.target, tt.showFull)
+			got := formatTaskTarget(tt.target, tt.showFull)
 			if got != tt.want {
-				t.Errorf("formatTarget(%q, %v) = %v, want %v", tt.target, tt.showFull, got, tt.want)
+				t.Errorf("formatTaskTarget(%q, %v) = %v, want %v", tt.target, tt.showFull, got, tt.want)
 			}
 		})
 	}
 }
 
-func TestParseTime(t *testing.T) {
+func TestParseTaskTime(t *testing.T) {
 	tests := []struct {
 		name    string
 		input   string
@@ -135,18 +135,18 @@ func TestParseTime(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := parseTime(tt.input)
+			got := parseTaskTime(tt.input)
 			if (got == nil) != tt.wantNil {
-				t.Errorf("parseTime(%q) nil = %v, want nil = %v", tt.input, got == nil, tt.wantNil)
+				t.Errorf("parseTaskTime(%q) nil = %v, want nil = %v", tt.input, got == nil, tt.wantNil)
 			}
 		})
 	}
 }
 
-func TestFormatStatus(t *testing.T) {
+func TestFormatLastRunStatus(t *testing.T) {
 	tests := []struct {
 		name           string
-		execution      *Execution
+		execution      *actuator.Execution
 		showFullStatus bool
 		want           string
 	}{
@@ -158,7 +158,7 @@ func TestFormatStatus(t *testing.T) {
 		},
 		{
 			name: "SUCCESS status",
-			execution: &Execution{
+			execution: &actuator.Execution{
 				Time:   "2025-10-22T19:00:00Z",
 				Status: "SUCCESS",
 			},
@@ -167,10 +167,10 @@ func TestFormatStatus(t *testing.T) {
 		},
 		{
 			name: "ERROR with short message",
-			execution: &Execution{
+			execution: &actuator.Execution{
 				Time:   "2025-10-22T19:00:00Z",
 				Status: "ERROR",
-				Exception: &Exception{
+				Exception: &actuator.Exception{
 					Message: "Connection timeout",
 					Type:    "java.net.SocketTimeoutException",
 				},
@@ -180,23 +180,23 @@ func TestFormatStatus(t *testing.T) {
 		},
 		{
 			name: "ERROR with long message truncated",
-			execution: &Execution{
+			execution: &actuator.Execution{
 				Time:   "2025-10-22T19:00:00Z",
 				Status: "ERROR",
-				Exception: &Exception{
+				Exception: &actuator.Exception{
 					Message: "This is a very long error message that exceeds the 80 character limit and should be truncated with an ellipsis",
 					Type:    "java.lang.Exception",
 				},
 			},
 			showFullStatus: false,
-			want:           "ERROR - This is a very long error message that exceeds the 80 character limit and should…",
+			want:           "ERROR - This is a very long error message that exceeds the 80 character limit and shoul…",
 		},
 		{
 			name: "ERROR with long message not truncated in full mode",
-			execution: &Execution{
+			execution: &actuator.Execution{
 				Time:   "2025-10-22T19:00:00Z",
 				Status: "ERROR",
-				Exception: &Exception{
+				Exception: &actuator.Exception{
 					Message: "This is a very long error message that exceeds the 80 character limit but should not be truncated in full mode",
 					Type:    "java.lang.Exception",
 				},
@@ -206,7 +206,7 @@ func TestFormatStatus(t *testing.T) {
 		},
 		{
 			name: "empty status",
-			execution: &Execution{
+			execution: &actuator.Execution{
 				Time:   "2025-10-22T19:00:00Z",
 				Status: "",
 			},
@@ -217,36 +217,10 @@ func TestFormatStatus(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			// Convert to actuator.Execution type
-			var actuatorExec *actuator.Execution
-			if tt.execution != nil {
-				actuatorExec = &actuator.Execution{
-					Time:   tt.execution.Time,
-					Status: tt.execution.Status,
-				}
-				if tt.execution.Exception != nil {
-					actuatorExec.Exception = &actuator.Exception{
-						Message: tt.execution.Exception.Message,
-						Type:    tt.execution.Exception.Type,
-					}
-				}
-			}
-
-			got := formatStatus(actuatorExec, tt.showFullStatus)
+			got := formatLastRunStatus(tt.execution, tt.showFullStatus)
 			if got != tt.want {
-				t.Errorf("formatStatus() = %v, want %v", got, tt.want)
+				t.Errorf("formatLastRunStatus() = %v, want %v", got, tt.want)
 			}
 		})
 	}
-}
-
-type Execution struct {
-	Time      string
-	Status    string
-	Exception *Exception
-}
-
-type Exception struct {
-	Message string
-	Type    string
 }

@@ -1,0 +1,59 @@
+-- test: logfile basic --
+-- command --
+kubectl-actuator --pod {{pod}} logfile
+-- expect:stdout --
+INFO
+-- expect:stdout --
+TestActuatorApplication
+
+
+-- test: logfile tail bytes --
+-- command --
+kubectl-actuator --pod {{pod}} logfile --tail-bytes 500
+-- expect:regex --
+INFO|WARN|ERROR
+
+
+-- test: logfile invalid tail bytes --
+-- command --
+kubectl-actuator --pod {{pod}} logfile --tail-bytes -5
+-- expect:error --
+cannot be negative
+-- expect:stderr --
+cannot be negative
+
+
+-- test: logfile to file --
+-- command --
+kubectl-actuator --pod {{pod}} logfile --output-file /tmp/kubectl-actuator-test.log
+-- expect:stderr --
+Wrote
+-- expect:stderr --
+/tmp/kubectl-actuator-test.log
+
+
+-- test: heapdump to file --
+-- command --
+kubectl-actuator --pod {{pod}} heapdump --output-file /tmp/kubectl-actuator-test.hprof
+-- expect --
+Requesting heap dump
+-- expect --
+Wrote
+
+
+-- test: heapdump live to file --
+-- command --
+kubectl-actuator --pod {{pod}} heapdump --live --output-file /tmp/kubectl-actuator-test.hprof
+-- expect --
+Wrote
+
+
+-- test: heapdump streams to stdout --
+-- command --
+kubectl-actuator --pod {{pod}} heapdump --output-file -
+-- expect:stdout --
+JAVA PROFILE
+-- expect:stderr --
+Requesting heap dump
+-- expect:stderr --
+Wrote
